@@ -1,3 +1,12 @@
+/*
+  ext.cpp
+
+  Defining extension methods for Wio LTE
+  
+  Copyright (c) 2018, katsuhiko kageyama All rights reserved.
+
+*/
+
 #include <WioLTEforArduino.h>
 #include "libmrubyc.h"
 
