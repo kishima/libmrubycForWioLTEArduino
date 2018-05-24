@@ -27,10 +27,6 @@
 /***** Typedefs *************************************************************/
 /***** Function prototypes **************************************************/
 /***** Local variables ******************************************************/
-#ifndef MRBC_NO_TIMER
-static sigset_t sigset_, sigset2_;
-#endif
-
 
 /***** Global variables *****************************************************/
 /***** Signal catching functions ********************************************/
@@ -42,7 +38,6 @@ static sigset_t sigset_, sigset2_;
 */
 static void sig_alarm(int dummy)
 {
-  mrbc_tick();
 }
 
 
@@ -51,7 +46,6 @@ static void sig_alarm(int dummy)
 
 /***** Local functions ******************************************************/
 /***** Global functions *****************************************************/
-#ifndef MRBC_NO_TIMER
 
 //================================================================
 /*!@brief
@@ -60,27 +54,10 @@ static void sig_alarm(int dummy)
 */
 void hal_init(void)
 {
-  sigemptyset(&sigset_);
-  sigaddset(&sigset_, SIGALRM);
-
-  // タイマー用シグナル準備
-  struct sigaction sa;
-  sa.sa_handler = sig_alarm;
-  sa.sa_flags   = SA_RESTART;
-  sa.sa_mask    = sigset_;
-  sigaction(SIGALRM, &sa, 0);
-
-  // タイマー設定
-  struct itimerval tval;
-  int sec  = 0;
-  int usec = 1000; // 1ms
-  tval.it_interval.tv_sec  = sec;
-  tval.it_interval.tv_usec = usec;
-  tval.it_value.tv_sec     = sec;
-  tval.it_value.tv_usec    = usec;
-  setitimer(ITIMER_REAL, &tval, 0);
+	hal_init_modem();
 }
 
+#ifndef MRBC_NO_TIMER
 
 //================================================================
 /*!@brief
@@ -89,7 +66,6 @@ void hal_init(void)
 */
 void hal_enable_irq(void)
 {
-  sigprocmask(SIG_SETMASK, &sigset2_, 0);
 }
 
 
@@ -100,7 +76,6 @@ void hal_enable_irq(void)
 */
 void hal_disable_irq(void)
 {
-  sigprocmask(SIG_BLOCK, &sigset_, &sigset2_);
 }
 
 

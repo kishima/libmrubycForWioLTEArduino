@@ -1,9 +1,7 @@
-
-#include <WioLTEforArduino.h>
 #include <libmrubyc.h>
 
-/* dumped in big endian order.
-   use `mrbc -e` option for better performance on little endian CPU. */
+/* 
+ */
 #include <stdint.h>
 extern const uint8_t code[];
 const uint8_t
@@ -30,8 +28,6 @@ code[] = {
 0x00,0x01,0x45,0x4e,0x44,0x00,0x00,0x00,0x00,0x08,
 };
 
-
-WioLTE Wio;
 #define MEMSIZE (1024*30)
 static uint8_t mempool[MEMSIZE];
 
@@ -39,9 +35,9 @@ static uint8_t mempool[MEMSIZE];
 void setup() {
   delay(1000);
 
-  Wio.Init();
+  SerialUSB.println("--- begin setup"); 
   mrbc_init(mempool, MEMSIZE);
-  mrbc_define_wiolte_methods(&Wio);
+  mrbc_define_wiolte_methods();
   if(NULL == mrbc_create_task( code, 0 )){
     SerialUSB.println("mrbc_create_task error");
     return;
@@ -53,4 +49,3 @@ void setup() {
 void loop() {
   delay(1000);
 }
-

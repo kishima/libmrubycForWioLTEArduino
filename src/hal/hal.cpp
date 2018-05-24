@@ -10,6 +10,16 @@
 #include <WioLTEforArduino.h>
 #include "hal.h"
 
+static WioLTE *Wio=NULL;
+
+extern "C" void hal_init_modem(void){
+	if(Wio!=NULL)return;
+	Wio = new WioLTE();
+	Wio->Init();
+}
+extern "C" void* hal_get_modem_obj(void){
+	return (void*)Wio;
+}
 
 extern "C" void hal_write_string(char* text){
   SerialUSB.print(text);

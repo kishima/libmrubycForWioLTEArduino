@@ -46,7 +46,7 @@ void hal_disable_irq(void);
 # define hal_idle_cpu()    sleep(1) // maybe interrupt by SIGINT
 
 #else // MRBC_NO_TIMER
-# define hal_init()        ((void)0)
+void hal_init(void);
 # define hal_enable_irq()  ((void)0)
 # define hal_disable_irq() ((void)0)
 # define hal_idle_cpu()    (hal_delay(1), mrbc_tick())
@@ -81,6 +81,8 @@ inline static int hal_flush(int fd)
 /* Wio LTE */
 void hal_write_string(char* text);
 
+void hal_init_modem(void);
+void* hal_get_modem_obj(void);
 
 #ifdef __cplusplus
 }
