@@ -37,6 +37,7 @@ extern "C" {
 /***** Global variables *****************************************************/
 /***** Function prototypes **************************************************/
 void mrbc_tick(void);
+void hal_delay(unsigned long t);
 
 #ifndef MRBC_NO_TIMER
 void hal_init(void);
@@ -48,7 +49,7 @@ void hal_disable_irq(void);
 # define hal_init()        ((void)0)
 # define hal_enable_irq()  ((void)0)
 # define hal_disable_irq() ((void)0)
-# define hal_idle_cpu()    (usleep(1000), mrbc_tick())
+# define hal_idle_cpu()    (hal_delay(1), mrbc_tick())
 
 #endif
 
@@ -63,10 +64,7 @@ void hal_disable_irq(void);
   @param  buf   pointer of buffer.
   @param  nbytes        output byte length.
 */
-inline static int hal_write(int fd, const void *buf, int nbytes)
-{
-  return write(1, buf, nbytes);
-}
+int hal_write(int fd, const void *buf, int nbytes);
 
 
 //================================================================
@@ -79,6 +77,9 @@ inline static int hal_flush(int fd)
 {
   return fsync(1);
 }
+
+/* Wio LTE */
+void hal_write_string(char* text);
 
 
 #ifdef __cplusplus

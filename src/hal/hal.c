@@ -105,3 +105,18 @@ void hal_disable_irq(void)
 
 
 #endif /* ifndef MRBC_NO_TIMER */
+
+int hal_write(int fd, const void *buf, int nbytes)
+{
+	char* t = (char*)buf;
+	char tbuf[2];
+	if(nbytes==1){
+		tbuf[0]=*t;
+		tbuf[1]='\0';
+		hal_write_string(tbuf);
+		return nbytes;
+	}
+	hal_write_string(t);
+	return nbytes;
+}
+
