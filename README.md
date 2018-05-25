@@ -3,15 +3,15 @@
 This is a mruby/c library for Wio LTE in Arduino environment.
 **This is my experimental work. There is no guarantee about this library.**
 
-## usage
+## Usage
 
-### condition
+### Condition
 
 This library depends on WioLTEforArduino library. Please install it in advance.
 
 https://github.com/SeeedJP/WioLTEforArduino
 
-### import the library to Arduino IDE
+### Import the library to Arduino IDE
 
 Clone this repository.
 
@@ -23,7 +23,7 @@ Copy "libmrubycForWioLTEArduino" to your Arduino library directory.
 
 Include a header file libmrubyc.h.
 
-### implement mruby/c functions
+### Implement mruby/c functions
 
 Nothing changed in basic usage of mruby/c. You can use mruby/c APIs.
 I added following function(s).
@@ -34,13 +34,13 @@ I added following function(s).
 You can refer example files about detailed usage.
 Of course, you need compiled mruby byte code to run on it.
 
-## future work (if I'm good...)
+## Future work (if I'm good...)
 
 - define mruby methods of Arduino and Wio LTE.
 - implement an automatical executer and an uploader of mruby byte code.
 - implement a function about downloading mruby byte code Over The Air.
 
-## copyright
+## Copyright
 
 Refer LICENSE file.
 
