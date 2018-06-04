@@ -36,24 +36,48 @@ static void class_wio_control_led(mrb_vm *vm, mrb_value *v, int argc )
 
 static void class_wio_init(mrb_vm *vm, mrb_value *v, int argc )
 {
-	wio.Init();
+	wio->Init();
+	SET_NIL_RETURN();
 }
 
 static void class_wio_power_supply_LTE(mrb_vm *vm, mrb_value *v, int argc )
 {
 	bool p = true;
 	
-	wio.PowerSupplyLTE(p);
+	wio->PowerSupplyLTE(p);
+	SET_NIL_RETURN();
 }
 
 static void class_wio_turnon_or_reset(mrb_vm *vm, mrb_value *v, int argc )
 {
-	bool result = wio.TurnOnOrReset();
+	DEBUG_PRINT("class_wio_turnon_or_reset\n");
+	bool result = wio->TurnOnOrReset();
 	if(result){
-		SET_FALSE_RETURN();
-	}else{
 		SET_TRUE_RETURN();
+		DEBUG_PRINT("class_wio_turnon_or_reset\n");
+	}else{
+		SET_FALSE_RETURN();
 	}
+}
+
+static void class_wio_activate(mrb_vm *vm, mrb_value *v, int argc )
+{
+	uint8_t *arg1 = GET_STRING_ARG(1);
+	uint8_t *arg2 = GET_STRING_ARG(2);
+	uint8_t *arg3 = GET_STRING_ARG(3);
+	bool result = wio->Activate((const char*)arg1, (const char*)arg2, (const char*)arg3);
+	if(0 == result){
+		DEBUG_PRINT("Activate fail!\n");
+	}
+	SET_TRUE_RETURN();
+}
+
+static void class_wio_http_get(mrb_vm *vm, mrb_value *v, int argc )
+{
+	uint8_t *url = GET_STRING_ARG(1);
+	DEBUG_PRINT((char*)url);
+	
+	SET_TRUE_RETURN();
 }
 
 
