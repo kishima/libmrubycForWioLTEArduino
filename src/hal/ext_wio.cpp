@@ -37,7 +37,7 @@ static void class_wio_control_led(mrb_vm *vm, mrb_value *v, int argc )
 static void class_wio_init(mrb_vm *vm, mrb_value *v, int argc )
 {
 	wio->Init();
-	SET_NIL_RETURN();
+	SET_TRUE_RETURN();
 }
 
 static void class_wio_power_supply_LTE(mrb_vm *vm, mrb_value *v, int argc )
@@ -45,7 +45,7 @@ static void class_wio_power_supply_LTE(mrb_vm *vm, mrb_value *v, int argc )
 	bool p = true;
 	
 	wio->PowerSupplyLTE(p);
-	SET_NIL_RETURN();
+	SET_TRUE_RETURN();
 }
 
 static void class_wio_turnon_or_reset(mrb_vm *vm, mrb_value *v, int argc )
@@ -54,9 +54,10 @@ static void class_wio_turnon_or_reset(mrb_vm *vm, mrb_value *v, int argc )
 	bool result = wio->TurnOnOrReset();
 	if(result){
 		SET_TRUE_RETURN();
-		DEBUG_PRINT("class_wio_turnon_or_reset\n");
+		DEBUG_PRINT("TurnOnOrReset OK\n");
 	}else{
 		SET_FALSE_RETURN();
+		DEBUG_PRINT("TurnOnOrReset ERROR\n");
 	}
 }
 
@@ -72,12 +73,24 @@ static void class_wio_activate(mrb_vm *vm, mrb_value *v, int argc )
 	SET_TRUE_RETURN();
 }
 
+static char recv_buffer[RECV_BUFF_SIZE];
+
 static void class_wio_http_get(mrb_vm *vm, mrb_value *v, int argc )
 {
-	uint8_t *url = GET_STRING_ARG(1);
-	DEBUG_PRINT((char*)url);
-	
-	SET_TRUE_RETURN();
+	char* url = reinterpret_cast<char*>(GET_STRING_ARG(1));
+	DEBUG_PRINT(url);
+	DEBUG_PRINT("\n");
+	int result = wio->HttpGet((const char*)url,recv_buffer,RECV_BUFF_SIZE);
+	if(result>=0){
+		DEBUG_PRINT("HTTP GET OK\n");
+		DEBUG_PRINT(recv_buffer);
+		mrb_value string = mrbc_string_new_cstr(vm,(const char*)recv_buffer);
+		SET_RETURN(string);
+	}else{
+		DEBUG_PRINT("HTTP GET ERROR\n");
+		DEBUG_PRINT(recv_buffer);
+		SET_NIL_RETURN();
+	}
 }
 
 
