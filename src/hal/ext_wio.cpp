@@ -12,11 +12,6 @@
 
 static WioLTE* wio=NULL;
 
-static void class_wio_new(mrb_vm *vm, mrb_value *v, int argc )
-{
-	
-}
-
 static void class_wio_control_led(mrb_vm *vm, mrb_value *v, int argc )
 {
 	if(argc!=3){
@@ -42,9 +37,9 @@ static void class_wio_init(mrb_vm *vm, mrb_value *v, int argc )
 
 static void class_wio_power_supply_LTE(mrb_vm *vm, mrb_value *v, int argc )
 {
-	bool p = true;
+	bool b = mrbc_trans_cppbool_value(GET_TT_ARG(1));
 	
-	wio->PowerSupplyLTE(p);
+	wio->PowerSupplyLTE(b);
 	SET_TRUE_RETURN();
 }
 
@@ -75,6 +70,47 @@ static void class_wio_activate(mrb_vm *vm, mrb_value *v, int argc )
 
 static char recv_buffer[RECV_BUFF_SIZE];
 
+static void class_wio_sock_open(mrb_vm *vm, mrb_value *v, int argc )
+{
+	char* host = reinterpret_cast<char*>(GET_STRING_ARG(1));
+	int port = GET_INT_ARG(1);
+	
+	int sock = wio->SocketOpen(host, port, WioLTE::SOCKET_TCP);
+	if(sock<0){
+		SET_FALSE_RETURN();
+		return;
+	}
+	
+	SET_INT_RETURN(sock);
+}
+
+static void class_wio_sock_send(mrb_vm *vm, mrb_value *v, int argc )
+{
+	int sock = GET_INT_ARG(1);
+	char* data = reinterpret_cast<char*>(GET_STRING_ARG(2));
+	int dataSize;
+
+	bool result = wio->SocketSend(sock,(const char*)data);
+
+	if(result){
+		SET_FALSE_RETURN();
+	}else{
+		SET_TRUE_RETURN();
+	}
+}
+static void class_wio_sock_close(mrb_vm *vm, mrb_value *v, int argc )
+{
+	int sock = GET_INT_ARG(1);
+	bool result = wio->SocketClose(sock);
+
+	if(result){
+		SET_FALSE_RETURN();
+	}else{
+		SET_TRUE_RETURN();
+	}
+	
+}
+
 static void class_wio_http_get(mrb_vm *vm, mrb_value *v, int argc )
 {
 	char* url = reinterpret_cast<char*>(GET_STRING_ARG(1));
@@ -88,7 +124,24 @@ static void class_wio_http_get(mrb_vm *vm, mrb_value *v, int argc )
 		SET_RETURN(string);
 	}else{
 		DEBUG_PRINT("HTTP GET ERROR\n");
-		DEBUG_PRINT(recv_buffer);
+		SET_NIL_RETURN();
+	}
+}
+
+static void class_wio_http_post(mrb_vm *vm, mrb_value *v, int argc )
+{
+	char* url = reinterpret_cast<char*>(GET_STRING_ARG(1));
+	char* data = reinterpret_cast<char*>(GET_STRING_ARG(2));
+	int response_code=0;
+	DEBUG_PRINTLN(url);
+	DEBUG_PRINTLN(data);
+	bool result = wio->HttpPost((const char*)url,(const char*)data,&response_code);
+	if(result>=0){
+		DEBUG_PRINT("HTTP POST ResponseCode=");
+		DEBUG_PRINTLN(response_code);
+		SET_INT_RETURN(response_code);
+	}else{
+		DEBUG_PRINT("HTTP POST ERROR\n");
 		SET_NIL_RETURN();
 	}
 }
@@ -100,7 +153,6 @@ void define_wiolte_class()
 	
 	mrb_class *class_wio;
 	class_wio = mrbc_define_class(0, "Wio", mrbc_class_object);
-	mrbc_define_method(0, class_wio, "new", class_wio_new);
 
 	// --- LED ---
 	mrbc_define_method(0, class_wio, "control_led", class_wio_control_led);
@@ -108,7 +160,7 @@ void define_wiolte_class()
 	// --- Power ---
 	mrbc_define_method(0, class_wio, "init", class_wio_init);
 	mrbc_define_method(0, class_wio, "power_supply_LTE", class_wio_power_supply_LTE);
-	//power supply gnss
+	//power supply gnss .. not supported by JP module
 	//power supply grove
 	//power supply sd
 	mrbc_define_method(0, class_wio, "turnon_or_reset", class_wio_turnon_or_reset);
@@ -127,12 +179,14 @@ void define_wiolte_class()
 	//get location
 	//sync time
 
-	//sock open
-	//sock send
-	//sock recv
-	//sock close
+	//socket func
+	mrbc_define_method(0, class_wio, "sock_open", class_wio_sock_open);
+	mrbc_define_method(0, class_wio, "sock_send", class_wio_sock_send);
+	//mrbc_define_method(0, class_wio, "sock_recv", class_wio_sock_recv);
+	mrbc_define_method(0, class_wio, "sock_close", class_wio_sock_close);
 	
+	//HTTP method
 	mrbc_define_method(0, class_wio, "http_get", class_wio_http_get);
-	//POST
+	mrbc_define_method(0, class_wio, "http_post", class_wio_http_post);
 
 }

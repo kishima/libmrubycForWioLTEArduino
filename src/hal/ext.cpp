@@ -10,6 +10,14 @@
 #include "libmrubyc.h"
 #include "ext.h"
 
+bool mrbc_trans_cppbool_value(mrb_vtype tt)
+{
+	if(tt==MRB_TT_TRUE){
+		return true;
+	}
+	return false;
+}
+
 void mrbc_define_wiolte_methods(void)
 {
 	define_arduino_class();

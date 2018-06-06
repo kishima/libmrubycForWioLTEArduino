@@ -19,9 +19,11 @@
 #define WIOMRBC_DEBUG
 
 #ifdef WIOMRBC_DEBUG
-#define DEBUG_PRINT(str)    hal_write_string(str)
+#define DEBUG_PRINT(val)    SerialUSB.print(val)
+#define DEBUG_PRINTLN(val)  SerialUSB.println(val)
 #else
-#define DEBUG_PRINT(str)
+#define DEBUG_PRINT(val)
+#define DEBUG_PRINTLN(val)
 #endif
 
 #endif
