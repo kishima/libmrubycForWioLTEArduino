@@ -63,15 +63,71 @@ void define_arduino_class()
 
 }
 
+static HardwareSerial* groveSerial = &Serial;
+
+static void class_serial_begin(mrb_vm *vm, mrb_value *v, int argc )
+{
+	int baud = GET_INT_ARG(1);
+	DEBUG_PRINTLN("groveSerial->begin");
+	DEBUG_PRINTLN(baud);
+	groveSerial->begin(baud);
+	SET_TRUE_RETURN();
+}
+static void class_serial_end(mrb_vm *vm, mrb_value *v, int argc )
+{
+	groveSerial->end();
+	SET_TRUE_RETURN();
+}
+static void class_serial_available(mrb_vm *vm, mrb_value *v, int argc )
+{
+	int res = groveSerial->available();
+	if(res!=0){
+		SET_TRUE_RETURN();
+	}else{
+		SET_FALSE_RETURN();
+	}
+}
+static void class_serial_readline(mrb_vm *vm, mrb_value *v, int argc )
+{
+	static char readbuff[200];
+	static int readp=0;
+	readp = 0;
+	while (groveSerial->available()) {
+		char data = groveSerial->read();
+		//DEBUG_PRINT(data);
+		if (data == '\r') continue;
+		if (data == '\n') {
+			readbuff[readp] = '\0';
+			DEBUG_PRINT("readp=");
+			DEBUG_PRINTLN(readp);
+			readp = 0;
+			mrb_value string = mrbc_string_new_cstr(vm,(const char*)readbuff);
+			SET_RETURN(string);
+			return;
+		}
+		
+		if (readp > sizeof (readbuff) - 1) { 
+			readp = 0;
+			SET_FALSE_RETURN();
+			return;
+		}
+		readbuff[readp++] = data;
+	}
+	SET_FALSE_RETURN();
+}
+static void class_serial_write(mrb_vm *vm, mrb_value *v, int argc )
+{
+	
+}
+
 void define_serial_class()
 {
 	mrb_class *class_serial;
 	class_serial = mrbc_define_class(0, "Serial", mrbc_class_object);
-	mrbc_define_method(0, class_serial, "new", NULL);
-	mrbc_define_method(0, class_serial, "begin", NULL);
-	mrbc_define_method(0, class_serial, "end", NULL);
-	mrbc_define_method(0, class_serial, "available", NULL);
-	mrbc_define_method(0, class_serial, "read", NULL);
-	mrbc_define_method(0, class_serial, "write", NULL);
+	mrbc_define_method(0, class_serial, "begin", class_serial_begin);
+	mrbc_define_method(0, class_serial, "end", class_serial_end);
+	mrbc_define_method(0, class_serial, "available", class_serial_available);
+	mrbc_define_method(0, class_serial, "readline", class_serial_readline);
+	mrbc_define_method(0, class_serial, "write", class_serial_write);
 }
 

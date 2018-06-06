@@ -42,6 +42,13 @@ static void class_wio_power_supply_LTE(mrb_vm *vm, mrb_value *v, int argc )
 	wio->PowerSupplyLTE(b);
 	SET_TRUE_RETURN();
 }
+static void class_wio_power_supply_grove(mrb_vm *vm, mrb_value *v, int argc )
+{
+	bool b = mrbc_trans_cppbool_value(GET_TT_ARG(1));
+	
+	wio->PowerSupplyGrove(b);
+	SET_TRUE_RETURN();
+}
 
 static void class_wio_turnon_or_reset(mrb_vm *vm, mrb_value *v, int argc )
 {
@@ -160,8 +167,8 @@ void define_wiolte_class()
 	// --- Power ---
 	mrbc_define_method(0, class_wio, "init", class_wio_init);
 	mrbc_define_method(0, class_wio, "power_supply_LTE", class_wio_power_supply_LTE);
+	mrbc_define_method(0, class_wio, "power_supply_grove", class_wio_power_supply_grove);
 	//power supply gnss .. not supported by JP module
-	//power supply grove
 	//power supply sd
 	mrbc_define_method(0, class_wio, "turnon_or_reset", class_wio_turnon_or_reset);
 	//turn off
