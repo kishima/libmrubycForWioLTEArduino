@@ -1,8 +1,7 @@
-sleep(1)
 Wio.power_supply_grove(true)
-sleep(2)
+sleep(1)
 Serial.begin(9600)
-sleep(3)
+sleep(1)
 
 while true
   line = Serial.readline
