@@ -55,7 +55,6 @@ void define_arduino_class()
 {
 	mrb_class *class_arduino;
 	class_arduino = mrbc_define_class(0, "Arduino", mrbc_class_object);
-	//mrbc_define_method(0, class_arduino, "new", NULL);
 	mrbc_define_method(0, class_arduino, "delay", class_arduino_delay);
 	mrbc_define_method(0, class_arduino, "pin_mode", class_arduino_pin_mode);
 	mrbc_define_method(0, class_arduino, "digital_wirte", NULL);
@@ -68,7 +67,7 @@ static HardwareSerial* groveSerial = &Serial;
 static void class_serial_begin(mrb_vm *vm, mrb_value *v, int argc )
 {
 	int baud = GET_INT_ARG(1);
-	DEBUG_PRINTLN("groveSerial->begin");
+	DEBUG_PRINT("groveSerial->begin baudrate=");
 	DEBUG_PRINTLN(baud);
 	groveSerial->begin(baud);
 	SET_TRUE_RETURN();
@@ -89,17 +88,14 @@ static void class_serial_available(mrb_vm *vm, mrb_value *v, int argc )
 }
 static void class_serial_readline(mrb_vm *vm, mrb_value *v, int argc )
 {
-	static char readbuff[200];
+	static char readbuff[120];
 	static int readp=0;
-	readp = 0;
+
 	while (groveSerial->available()) {
 		char data = groveSerial->read();
-		//DEBUG_PRINT(data);
 		if (data == '\r') continue;
 		if (data == '\n') {
 			readbuff[readp] = '\0';
-			DEBUG_PRINT("readp=");
-			DEBUG_PRINTLN(readp);
 			readp = 0;
 			mrb_value string = mrbc_string_new_cstr(vm,(const char*)readbuff);
 			SET_RETURN(string);
@@ -108,12 +104,13 @@ static void class_serial_readline(mrb_vm *vm, mrb_value *v, int argc )
 		
 		if (readp > sizeof (readbuff) - 1) { 
 			readp = 0;
+			DEBUG_PRINT("\nOVERFLOW\n");
 			SET_FALSE_RETURN();
 			return;
 		}
 		readbuff[readp++] = data;
 	}
-	SET_FALSE_RETURN();
+	SET_NIL_RETURN();
 }
 static void class_serial_write(mrb_vm *vm, mrb_value *v, int argc )
 {

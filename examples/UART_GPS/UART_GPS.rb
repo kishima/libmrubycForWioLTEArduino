@@ -6,6 +6,6 @@ sleep(3)
 
 while true
   line = Serial.readline
-  puts line if line != false
-  Arduino.delay(10) if line == false
+  puts line if line != false && line != nil
+  Arduino.delay(10) if line == false || line == nil
 end
