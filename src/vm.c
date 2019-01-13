@@ -14,13 +14,14 @@
 */
 
 #include "vm_config.h"
-#include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <assert.h>
 #include "vm.h"
 #include "alloc.h"
+#include "load.h"
 #include "static.h"
+#include "global.h"
 #include "opcode.h"
 #include "class.h"
 #include "symbol.h"
@@ -83,7 +84,7 @@ const char * mrbc_get_irep_symbol( const uint8_t *p, int n )
   @param  vm	Pointer to VM
   @return	string
 */
-const char *mrbc_get_callee_name( mrb_vm *vm )
+const char *mrbc_get_callee_name( struct VM *vm )
 {
   uint32_t code = bin_to_uint32(vm->pc_irep->code + (vm->pc - 1) * 4);
   int rb = GETARG_B(code);  // index of method sym
@@ -101,39 +102,82 @@ static void not_supported(void)
 }
 
 
-
 //================================================================
-/*!@brief
-  Push current status to callinfo stack
+/*! mrbc_irep allocator
 
+  @param  vm	Pointer to VM.
+  @return	Pointer to allocated memory or NULL.
 */
-void mrbc_push_callinfo(mrb_vm *vm, int n_args)
+mrbc_irep *mrbc_irep_alloc(struct VM *vm)
 {
-  mrb_callinfo *callinfo = vm->callinfo + vm->callinfo_top;
-  callinfo->reg_top = vm->reg_top;
-  callinfo->pc_irep = vm->pc_irep;
-  callinfo->pc = vm->pc;
-  callinfo->n_args = n_args;
-  callinfo->target_class = vm->target_class;
-  vm->callinfo_top++;
+  mrbc_irep *p = (mrbc_irep *)mrbc_alloc(vm, sizeof(mrbc_irep));
+  if( p )
+    memset(p, 0, sizeof(mrbc_irep));	// caution: assume NULL is zero.
+  return p;
 }
 
 
+//================================================================
+/*! release mrbc_irep holds memory
+
+  @param  irep	Pointer to allocated mrbc_irep.
+*/
+void mrbc_irep_free(mrbc_irep *irep)
+{
+  int i;
+
+  // release pools.
+  for( i = 0; i < irep->plen; i++ ) {
+    mrbc_raw_free( irep->pools[i] );
+  }
+  if( irep->plen ) mrbc_raw_free( irep->pools );
+
+  // release child ireps.
+  for( i = 0; i < irep->rlen; i++ ) {
+    mrbc_irep_free( irep->reps[i] );
+  }
+  if( irep->rlen ) mrbc_raw_free( irep->reps );
+
+  mrbc_raw_free( irep );
+}
+
 
 //================================================================
-/*!@brief
-  Push current status to callinfo stack
+/*! Push current status to callinfo stack
 
 */
-void mrbc_pop_callinfo(mrb_vm *vm)
+void mrbc_push_callinfo( struct VM *vm, mrbc_sym mid, int n_args )
 {
-  vm->callinfo_top--;
-  mrb_callinfo *callinfo = vm->callinfo + vm->callinfo_top;
-  vm->reg_top = callinfo->reg_top;
+  mrbc_callinfo *callinfo = mrbc_alloc(vm, sizeof(mrbc_callinfo));
+  if( !callinfo ) return;
+
+  callinfo->current_regs = vm->current_regs;
+  callinfo->pc_irep = vm->pc_irep;
+  callinfo->pc = vm->pc;
+  callinfo->mid = mid;
+  callinfo->n_args = n_args;
+  callinfo->target_class = vm->target_class;
+  callinfo->prev = vm->callinfo_tail;
+  vm->callinfo_tail = callinfo;
+}
+
+
+//================================================================
+/*! Pop current status to callinfo stack
+
+*/
+void mrbc_pop_callinfo( struct VM *vm )
+{
+  mrbc_callinfo *callinfo = vm->callinfo_tail;
+  vm->callinfo_tail = callinfo->prev;
+  vm->current_regs = callinfo->current_regs;
   vm->pc_irep = callinfo->pc_irep;
   vm->pc = callinfo->pc;
   vm->target_class = callinfo->target_class;
+
+  mrbc_free(vm, callinfo);
 }
+
 
 
 
@@ -148,7 +192,7 @@ void mrbc_pop_callinfo(mrb_vm *vm)
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_nop( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_nop( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   return 0;
 }
@@ -165,7 +209,7 @@ inline static int op_nop( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_move( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_move( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);
@@ -189,7 +233,7 @@ inline static int op_move( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadl( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadl( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
@@ -198,7 +242,7 @@ inline static int op_loadl( mrb_vm *vm, uint32_t code, mrb_value *regs )
 
   // regs[ra] = vm->pc_irep->pools[rb];
 
-  mrb_object *pool_obj = vm->pc_irep->pools[rb];
+  mrbc_object *pool_obj = vm->pc_irep->pools[rb];
   regs[ra] = *pool_obj;
 
   return 0;
@@ -216,12 +260,12 @@ inline static int op_loadl( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadi( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadi( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_FIXNUM;
+  regs[ra].tt = MRBC_TT_FIXNUM;
   regs[ra].i = GETARG_sBx(code);
 
   return 0;
@@ -239,15 +283,15 @@ inline static int op_loadi( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadsym( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadsym( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name);
+  mrbc_sym sym_id = str_to_symid(sym_name);
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_SYMBOL;
+  regs[ra].tt = MRBC_TT_SYMBOL;
   regs[ra].i = sym_id;
 
   return 0;
@@ -265,12 +309,12 @@ inline static int op_loadsym( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadnil( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadnil( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_NIL;
+  regs[ra].tt = MRBC_TT_NIL;
 
   return 0;
 }
@@ -287,12 +331,12 @@ inline static int op_loadnil( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadself( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadself( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
   mrbc_release(&regs[ra]);
-  mrbc_dup(&regs[0]);       // TODO: Need?
+  mrbc_dup(&regs[0]);
   regs[ra] = regs[0];
 
   return 0;
@@ -310,12 +354,12 @@ inline static int op_loadself( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadt( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadt( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_TRUE;
+  regs[ra].tt = MRBC_TT_TRUE;
 
   return 0;
 }
@@ -332,12 +376,12 @@ inline static int op_loadt( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_loadf( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_loadf( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_FALSE;
+  regs[ra].tt = MRBC_TT_FALSE;
 
   return 0;
 }
@@ -354,15 +398,21 @@ inline static int op_loadf( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_getglobal( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_getglobal( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name);
+  mrbc_sym sym_id = str_to_symid(sym_name);
 
   mrbc_release(&regs[ra]);
-  regs[ra] = global_object_get(sym_id);
+  mrbc_value *v = mrbc_get_global(sym_id);
+  if( v == NULL ) {
+    regs[ra] = mrbc_nil_value();
+  } else {
+    mrbc_dup(v);
+    regs[ra] = *v;
+  }
 
   return 0;
 }
@@ -379,13 +429,14 @@ inline static int op_getglobal( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_setglobal( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_setglobal( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name);
-  global_object_add(sym_id, regs[ra]);
+  mrbc_sym sym_id = str_to_symid(sym_name);
+  mrbc_dup(&regs[ra]);
+  mrbc_set_global(sym_id, &regs[ra]);
 
   return 0;
 }
@@ -402,15 +453,15 @@ inline static int op_setglobal( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_getiv( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_getiv( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
 
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name+1);	// skip '@'
+  mrbc_sym sym_id = str_to_symid(sym_name+1);	// skip '@'
 
-  mrb_value val = mrbc_instance_getiv(&regs[0], sym_id);
+  mrbc_value val = mrbc_instance_getiv(&regs[0], sym_id);
 
   mrbc_release(&regs[ra]);
   regs[ra] = val;
@@ -430,13 +481,13 @@ inline static int op_getiv( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_setiv( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_setiv( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
 
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name+1);	// skip '@'
+  mrbc_sym sym_id = str_to_symid(sym_name+1);	// skip '@'
 
   mrbc_instance_setiv(&regs[0], sym_id, &regs[ra]);
 
@@ -455,15 +506,23 @@ inline static int op_setiv( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_getconst( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_getconst( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name);
+  mrbc_sym sym_id = str_to_symid(sym_name);
 
   mrbc_release(&regs[ra]);
-  regs[ra] = const_object_get(sym_id);
+  mrbc_value *v = mrbc_get_const(sym_id);
+  if( v == NULL ) {		// raise?
+    console_printf( "NameError: uninitialized constant %s\n",
+		    symid_to_str( sym_id ));
+    return 0;
+  }
+
+  mrbc_dup(v);
+  regs[ra] = *v;
 
   return 0;
 }
@@ -481,15 +540,89 @@ inline static int op_getconst( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @retval 0  No error.
 */
 
-inline static int op_setconst( mrb_vm *vm, uint32_t code, mrb_value *regs ) {
+static inline int op_setconst( mrbc_vm *vm, uint32_t code, mrbc_value *regs ) {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name);
-  const_object_add(sym_id, &regs[ra]);
+  mrbc_sym sym_id = str_to_symid(sym_name);
+  mrbc_dup(&regs[ra]);
+  mrbc_set_const(sym_id, &regs[ra]);
 
   return 0;
 }
+
+
+
+//================================================================
+/*!@brief
+  Execute OP_GETUPVAR
+
+  R(A) := uvget(B,C)
+
+  @param  vm    A pointer of VM.
+  @param  code  bytecode
+  @param  regs  vm->regs + vm->reg_top
+  @retval 0  No error.
+*/
+static inline int op_getupvar( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
+{
+  int ra = GETARG_A(code);
+  int rb = GETARG_B(code);
+  int rc = GETARG_C(code);   // UP
+  mrbc_callinfo *callinfo = vm->callinfo_tail;
+
+  // find callinfo
+  int n = rc * 2 + 1;
+  while( n > 0 ){
+    callinfo = callinfo->prev;
+    n--;
+  }
+
+  mrbc_value *up_regs = callinfo->current_regs;
+
+  mrbc_release( &regs[ra] );
+  mrbc_dup( &up_regs[rb] );
+  regs[ra] = up_regs[rb];
+
+  return 0;
+}
+
+
+
+//================================================================
+/*!@brief
+  Execute OP_SETUPVAR
+
+  uvset(B,C,R(A))
+
+  @param  vm    A pointer of VM.
+  @param  code  bytecode
+  @param  regs  vm->regs + vm->reg_top
+  @retval 0  No error.
+*/
+static inline int op_setupvar( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
+{
+  int ra = GETARG_A(code);
+  int rb = GETARG_B(code);
+  int rc = GETARG_C(code);   // UP
+  mrbc_callinfo *callinfo = vm->callinfo_tail;
+
+  // find callinfo
+  int n = rc * 2 + 1;
+  while( n > 0 ){
+    callinfo = callinfo->prev;
+    n--;
+  }
+
+  mrbc_value *up_regs = callinfo->current_regs;
+
+  mrbc_release( &up_regs[rb] );
+  mrbc_dup( &regs[ra] );
+  up_regs[rb] = regs[ra];
+
+  return 0;
+}
+
 
 
 //================================================================
@@ -503,7 +636,7 @@ inline static int op_setconst( mrb_vm *vm, uint32_t code, mrb_value *regs ) {
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_jmp( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_jmp( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   vm->pc += GETARG_sBx(code) - 1;
   return 0;
@@ -521,9 +654,9 @@ inline static int op_jmp( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_jmpif( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_jmpif( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
-  if( regs[GETARG_A(code)].tt > MRB_TT_FALSE ) {
+  if( regs[GETARG_A(code)].tt > MRBC_TT_FALSE ) {
     vm->pc += GETARG_sBx(code) - 1;
   }
   return 0;
@@ -541,9 +674,9 @@ inline static int op_jmpif( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_jmpnot( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_jmpnot( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
-  if( regs[GETARG_A(code)].tt <= MRB_TT_FALSE ) {
+  if( regs[GETARG_A(code)].tt <= MRBC_TT_FALSE ) {
     vm->pc += GETARG_sBx(code) - 1;
   }
   return 0;
@@ -562,12 +695,12 @@ inline static int op_jmpnot( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_send( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_send( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);  // index of method sym
   int rc = GETARG_C(code);  // number of params
-  mrb_value recv = regs[ra];
+  mrbc_value recv = regs[ra];
 
   // Block param
   int bidx = ra + rc + 1;
@@ -575,12 +708,12 @@ inline static int op_send( mrb_vm *vm, uint32_t code, mrb_value *regs )
   case OP_SEND:
     // set nil
     mrbc_release( &regs[bidx] );
-    regs[bidx].tt = MRB_TT_NIL;
+    regs[bidx].tt = MRBC_TT_NIL;
     break;
 
   case OP_SENDB:
     // set Proc object
-    if( regs[bidx].tt != MRB_TT_NIL && regs[bidx].tt != MRB_TT_PROC ){
+    if( regs[bidx].tt != MRBC_TT_NIL && regs[bidx].tt != MRBC_TT_PROC ){
       // TODO: fix the following behavior
       // convert to Proc ?
       // raise exceprion in mruby/c ?
@@ -593,11 +726,13 @@ inline static int op_send( mrb_vm *vm, uint32_t code, mrb_value *regs )
   }
 
   const char *sym_name = mrbc_get_irep_symbol(vm->pc_irep->ptr_to_sym, rb);
-  mrb_sym sym_id = str_to_symid(sym_name);
-  mrb_proc *m = find_method(vm, recv, sym_id);
+  mrbc_sym sym_id = str_to_symid(sym_name);
+  mrbc_proc *m = find_method(vm, &recv, sym_id);
 
   if( m == 0 ) {
-    console_printf("No method. vtype=%d method='%s'\n", recv.tt, sym_name);
+    mrb_class *cls = find_class_by_object( vm, &recv );
+    console_printf("No method. Class:%s Method:%s\n",
+		   symid_to_str(cls->sym_id), sym_name );
     return 0;
   }
 
@@ -605,9 +740,12 @@ inline static int op_send( mrb_vm *vm, uint32_t code, mrb_value *regs )
   if( m->c_func ) {
     m->func(vm, regs + ra, rc);
 
-    int release_reg = ra+rc+1;
+    extern void c_proc_call(mrbc_vm *vm, mrbc_value v[], int argc);
+    if( m->func == c_proc_call ) return 0;
+
+    int release_reg = ra+1;
     while( release_reg <= bidx ) {
-      // mrbc_release(&regs[release_reg]);
+      mrbc_release(&regs[release_reg]);
       release_reg++;
     }
     return 0;
@@ -615,14 +753,14 @@ inline static int op_send( mrb_vm *vm, uint32_t code, mrb_value *regs )
 
   // m is Ruby method.
   // callinfo
-  mrbc_push_callinfo(vm, rc);
+  mrbc_push_callinfo(vm, sym_id, rc);
 
   // target irep
   vm->pc = 0;
   vm->pc_irep = m->irep;
 
   // new regs
-  vm->reg_top += ra;
+  vm->current_regs += ra;
 
   return 0;
 }
@@ -639,13 +777,111 @@ inline static int op_send( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_call( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_call( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
-  mrbc_push_callinfo(vm, 0);
+  mrbc_push_callinfo(vm, 0, 0);
 
   // jump to proc
   vm->pc = 0;
   vm->pc_irep = regs[0].proc->irep;
+
+  return 0;
+}
+
+
+
+//================================================================
+/*!@brief
+  Execute OP_SUPER
+
+  R(A) := super(R(A+1),... ,R(A+C+1))
+
+  @param  vm    A pointer of VM.
+  @param  code  bytecode
+  @param  regs  vm->regs + vm->reg_top
+  @retval 0  No error.
+*/
+inline static int op_super( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
+{
+  int ra = GETARG_A(code);
+  //  int rb = GETARG_B(code);  // index of method sym
+  int rc = GETARG_C(code);  // number of params
+
+  // copy self, same as LOADSELF
+  mrbc_release(&regs[ra]);
+  mrbc_dup(&regs[0]);
+  regs[ra] = regs[0];
+
+  mrbc_sym sym_id = vm->callinfo_tail->mid;
+
+  // find super method
+  mrbc_proc *m = 0;
+  mrbc_class *cls = regs[ra].instance->cls->super;
+  while( cls != 0 ) {
+    mrbc_proc *proc = cls->procs;
+    while( proc != 0 ) {
+      if( proc->sym_id == sym_id ) {
+	m = proc;
+	goto FIND_SUPER_EXIT;
+      }
+      proc = proc->next;
+    }
+    cls = cls->super;
+  }
+ FIND_SUPER_EXIT:
+
+  if( m == 0 ) {
+    // No super method
+    return 0;
+  }
+
+  // Change class
+  regs[ra].instance->cls = cls;
+
+  // m is C func
+  if( m->c_func ) {
+    m->func(vm, regs + ra, rc);
+
+    extern void c_proc_call(mrbc_vm *vm, mrbc_value v[], int argc);
+    if( m->func == c_proc_call ) return 0;
+
+    int release_reg = ra+1;
+    while( release_reg <= ra+rc+1 ) {
+      mrbc_release(&regs[release_reg]);
+      release_reg++;
+    }
+    return 0;
+  }
+
+  // m is Ruby method.
+  // callinfo
+  mrbc_push_callinfo(vm, sym_id, rc);
+
+  // target irep
+  vm->pc = 0;
+  vm->pc_irep = m->irep;
+  // new regs
+  vm->current_regs += ra;
+
+  return 0;
+}
+
+
+
+//================================================================
+/*!@brief
+  Execute OP_ARGARY
+
+  R(A) := argument array (16=6:1:5:4)
+
+  @param  vm    A pointer of VM.
+  @param  code  bytecode
+  @param  regs  vm->regs + vm->reg_top
+  @retval 0  No error.
+*/
+inline static int op_argary( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
+{
+  //
 
   return 0;
 }
@@ -663,9 +899,9 @@ inline static int op_call( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_enter( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_enter( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
-  mrb_callinfo *callinfo = vm->callinfo + vm->callinfo_top - 1;
+  mrbc_callinfo *callinfo = vm->callinfo_tail;
   uint32_t enter_param = GETARG_Ax(code);
   int def_args = (enter_param >> 13) & 0x1f;  // default args
   int args = (enter_param >> 18) & 0x1f;      // given args
@@ -687,31 +923,35 @@ inline static int op_enter( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_return( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_return( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   // return value
   int ra = GETARG_A(code);
-  //  if( ra != 0 ){
-  mrb_value v = regs[ra];
-  mrbc_dup(&v);
+
   mrbc_release(&regs[0]);
-  regs[0] = v;
-  //  }
+  regs[0] = regs[ra];
+  regs[ra].tt = MRBC_TT_EMPTY;
+    
+  // nregs to release
+  int nregs = vm->pc_irep->nregs;
+
   // restore irep,pc,regs
-  vm->callinfo_top--;
-  mrb_callinfo *callinfo = vm->callinfo + vm->callinfo_top;
-  int reg_top = vm->reg_top;
-  vm->reg_top = callinfo->reg_top;
-  // clear regs and restore vm->reg_top
-  while( reg_top > callinfo->reg_top ){
-    mrbc_release(&regs[reg_top]);
-    regs[reg_top].tt = MRB_TT_EMPTY;
-    reg_top--;
-  }
-  // restore others
+  mrbc_callinfo *callinfo = vm->callinfo_tail;
+  vm->callinfo_tail = callinfo->prev;
+  vm->current_regs = callinfo->current_regs;
   vm->pc_irep = callinfo->pc_irep;
   vm->pc = callinfo->pc;
   vm->target_class = callinfo->target_class;
+
+  // clear stacked arguments
+  int i;
+  for( i = 1; i < nregs; i++ ) {
+    mrbc_release( &regs[i] );
+  }
+
+  // release callinfo
+  mrbc_free(vm, callinfo);
+
   return 0;
 }
 
@@ -727,20 +967,16 @@ inline static int op_return( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_blkpush( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_blkpush( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
-
-  mrb_value *stack = regs + 1;
-
-  if( stack[0].tt == MRB_TT_NIL ){
-    return -1;  // EYIELD
-  }
-
+  int rb = GETARG_Bx(code);  // 16=6:1:5:4
+  int offset = rb >> 10;     //    ^
+  
   mrbc_release(&regs[ra]);
-  mrbc_dup( stack );
-  regs[ra] = stack[0];
-
+  mrbc_dup( &regs[offset+1] );
+  regs[ra] = regs[offset+1];
+  
   return 0;
 }
 
@@ -757,28 +993,28 @@ inline static int op_blkpush( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_add( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_add( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
       regs[ra].i += regs[ra+1].i;
       return 0;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Fixnum, Float
-      regs[ra].tt = MRB_TT_FLOAT;
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Fixnum, Float
+      regs[ra].tt = MRBC_TT_FLOAT;
       regs[ra].d = regs[ra].i + regs[ra+1].d;
       return 0;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Float, Fixnum
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Float, Fixnum
       regs[ra].d += regs[ra+1].i;
       return 0;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Float, Float
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Float, Float
       regs[ra].d += regs[ra+1].d;
       return 0;
     }
@@ -802,17 +1038,17 @@ inline static int op_add( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_addi( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_addi( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
     regs[ra].i += GETARG_C(code);
     return 0;
   }
 
 #if MRBC_USE_FLOAT
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
     regs[ra].d += GETARG_C(code);
     return 0;
   }
@@ -834,28 +1070,28 @@ inline static int op_addi( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_sub( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_sub( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
       regs[ra].i -= regs[ra+1].i;
       return 0;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Fixnum, Float
-      regs[ra].tt = MRB_TT_FLOAT;
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Fixnum, Float
+      regs[ra].tt = MRBC_TT_FLOAT;
       regs[ra].d = regs[ra].i - regs[ra+1].d;
       return 0;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Float, Fixnum
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Float, Fixnum
       regs[ra].d -= regs[ra+1].i;
       return 0;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Float, Float
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Float, Float
       regs[ra].d -= regs[ra+1].d;
       return 0;
     }
@@ -880,17 +1116,17 @@ inline static int op_sub( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_subi( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_subi( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
     regs[ra].i -= GETARG_C(code);
     return 0;
   }
 
 #if MRBC_USE_FLOAT
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
     regs[ra].d -= GETARG_C(code);
     return 0;
   }
@@ -912,28 +1148,28 @@ inline static int op_subi( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_mul( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_mul( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
       regs[ra].i *= regs[ra+1].i;
       return 0;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Fixnum, Float
-      regs[ra].tt = MRB_TT_FLOAT;
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Fixnum, Float
+      regs[ra].tt = MRBC_TT_FLOAT;
       regs[ra].d = regs[ra].i * regs[ra+1].d;
       return 0;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Float, Fixnum
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Float, Fixnum
       regs[ra].d *= regs[ra+1].i;
       return 0;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Float, Float
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Float, Float
       regs[ra].d *= regs[ra+1].d;
       return 0;
     }
@@ -958,28 +1194,28 @@ inline static int op_mul( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_div( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_div( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Fixnum, Fixnum
       regs[ra].i /= regs[ra+1].i;
       return 0;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Fixnum, Float
-      regs[ra].tt = MRB_TT_FLOAT;
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Fixnum, Float
+      regs[ra].tt = MRBC_TT_FLOAT;
       regs[ra].d = regs[ra].i / regs[ra+1].d;
       return 0;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {	// in case of Float, Fixnum
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {	// in case of Float, Fixnum
       regs[ra].d /= regs[ra+1].i;
       return 0;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {	// in case of Float, Float
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {	// in case of Float, Float
       regs[ra].d /= regs[ra+1].d;
       return 0;
     }
@@ -1004,14 +1240,14 @@ inline static int op_div( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_eq( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_eq( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int result = mrbc_compare(&regs[ra], &regs[ra+1]);
 
   mrbc_release(&regs[ra+1]);
   mrbc_release(&regs[ra]);
-  regs[ra].tt = result ? MRB_TT_FALSE : MRB_TT_TRUE;
+  regs[ra].tt = result ? MRBC_TT_FALSE : MRBC_TT_TRUE;
 
   return 0;
 }
@@ -1028,28 +1264,28 @@ inline static int op_eq( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_lt( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_lt( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int result;
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].i < regs[ra+1].i;	// in case of Fixnum, Fixnum
       goto DONE;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].i < regs[ra+1].d;	// in case of Fixnum, Float
       goto DONE;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].d < regs[ra+1].i;	// in case of Float, Fixnum
       goto DONE;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].d < regs[ra+1].d;	// in case of Float, Float
       goto DONE;
     }
@@ -1062,7 +1298,7 @@ inline static int op_lt( mrb_vm *vm, uint32_t code, mrb_value *regs )
   return 0;
 
 DONE:
-  regs[ra].tt = result ? MRB_TT_TRUE : MRB_TT_FALSE;
+  regs[ra].tt = result ? MRBC_TT_TRUE : MRBC_TT_FALSE;
   return 0;
 }
 
@@ -1078,28 +1314,28 @@ DONE:
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_le( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_le( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int result;
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].i <= regs[ra+1].i;	// in case of Fixnum, Fixnum
       goto DONE;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].i <= regs[ra+1].d;	// in case of Fixnum, Float
       goto DONE;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].d <= regs[ra+1].i;	// in case of Float, Fixnum
       goto DONE;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].d <= regs[ra+1].d;	// in case of Float, Float
       goto DONE;
     }
@@ -1112,7 +1348,7 @@ inline static int op_le( mrb_vm *vm, uint32_t code, mrb_value *regs )
   return 0;
 
 DONE:
-  regs[ra].tt = result ? MRB_TT_TRUE : MRB_TT_FALSE;
+  regs[ra].tt = result ? MRBC_TT_TRUE : MRBC_TT_FALSE;
   return 0;
 }
 
@@ -1128,28 +1364,28 @@ DONE:
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_gt( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_gt( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int result;
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].i > regs[ra+1].i;	// in case of Fixnum, Fixnum
       goto DONE;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].i > regs[ra+1].d;	// in case of Fixnum, Float
       goto DONE;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].d > regs[ra+1].i;	// in case of Float, Fixnum
       goto DONE;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].d > regs[ra+1].d;	// in case of Float, Float
       goto DONE;
     }
@@ -1162,7 +1398,7 @@ inline static int op_gt( mrb_vm *vm, uint32_t code, mrb_value *regs )
   return 0;
 
 DONE:
-  regs[ra].tt = result ? MRB_TT_TRUE : MRB_TT_FALSE;
+  regs[ra].tt = result ? MRBC_TT_TRUE : MRBC_TT_FALSE;
   return 0;
 }
 
@@ -1178,28 +1414,28 @@ DONE:
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_ge( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_ge( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int result;
 
-  if( regs[ra].tt == MRB_TT_FIXNUM ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FIXNUM ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].i >= regs[ra+1].i;	// in case of Fixnum, Fixnum
       goto DONE;
     }
 #if MRBC_USE_FLOAT
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].i >= regs[ra+1].d;	// in case of Fixnum, Float
       goto DONE;
     }
   }
-  if( regs[ra].tt == MRB_TT_FLOAT ) {
-    if( regs[ra+1].tt == MRB_TT_FIXNUM ) {
+  if( regs[ra].tt == MRBC_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FIXNUM ) {
       result = regs[ra].d >= regs[ra+1].i;	// in case of Float, Fixnum
       goto DONE;
     }
-    if( regs[ra+1].tt == MRB_TT_FLOAT ) {
+    if( regs[ra+1].tt == MRBC_TT_FLOAT ) {
       result = regs[ra].d >= regs[ra+1].d;	// in case of Float, Float
       goto DONE;
     }
@@ -1212,7 +1448,7 @@ inline static int op_ge( mrb_vm *vm, uint32_t code, mrb_value *regs )
   return 0;
 
 DONE:
-  regs[ra].tt = result ? MRB_TT_TRUE : MRB_TT_FALSE;
+  regs[ra].tt = result ? MRBC_TT_TRUE : MRBC_TT_FALSE;
   return 0;
 }
 
@@ -1228,17 +1464,17 @@ DONE:
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_array( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_array( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);
   int rc = GETARG_C(code);
 
-  mrb_value value = mrbc_array_new(vm, rc);
+  mrbc_value value = mrbc_array_new(vm, rc);
   if( value.array == NULL ) return -1;	// ENOMEM
 
-  memcpy( value.array->data, &regs[rb], sizeof(mrb_value) * rc );
-  memset( &regs[rb], 0, sizeof(mrb_value) * rc );
+  memcpy( value.array->data, &regs[rb], sizeof(mrbc_value) * rc );
+  memset( &regs[rb], 0, sizeof(mrbc_value) * rc );
   value.array->n_stored = rc;
 
   mrbc_release(&regs[ra]);
@@ -1259,20 +1495,55 @@ inline static int op_array( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_string( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_string( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
 #if MRBC_USE_STRING
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
-  mrb_object *pool_obj = vm->pc_irep->pools[rb];
+  mrbc_object *pool_obj = vm->pc_irep->pools[rb];
 
   /* CAUTION: pool_obj->str - 2. see IREP POOL structure. */
   int len = bin_to_uint16(pool_obj->str - 2);
-  mrb_value value = mrbc_string_new(vm, pool_obj->str, len);
+  mrbc_value value = mrbc_string_new(vm, pool_obj->str, len);
   if( value.string == NULL ) return -1;		// ENOMEM
 
   mrbc_release(&regs[ra]);
   regs[ra] = value;
+
+#else
+  not_supported();
+#endif
+  return 0;
+}
+
+
+//================================================================
+/*!@brief
+  String Catination
+
+  str_cat(R(A),R(B))
+
+  @param  vm    A pointer of VM.
+  @param  code  bytecode
+  @param  regs  vm->regs + vm->reg_top
+  @retval 0  No error.
+*/
+static inline int op_strcat( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
+{
+#if MRBC_USE_STRING
+  int ra = GETARG_A(code);
+  int rb = GETARG_B(code);
+
+  // call "to_s"
+  mrbc_sym sym_id = str_to_symid("to_s");
+  mrbc_proc *m = find_method(vm, &regs[rb], sym_id);
+  if( m && m->c_func ){
+    m->func(vm, regs+rb, 0);
+  }
+
+  mrbc_value v = mrbc_string_add(vm, &regs[ra], &regs[rb]);
+  mrbc_release(&regs[ra]);
+  regs[ra] = v;
 
 #else
   not_supported();
@@ -1292,18 +1563,18 @@ inline static int op_string( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_hash( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_hash( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);
   int rc = GETARG_C(code);
 
-  mrb_value value = mrbc_hash_new(vm, rc);
+  mrbc_value value = mrbc_hash_new(vm, rc);
   if( value.hash == NULL ) return -1;	// ENOMEM
 
   rc *= 2;
-  memcpy( value.hash->data, &regs[rb], sizeof(mrb_value) * rc );
-  memset( &regs[rb], 0, sizeof(mrb_value) * rc );
+  memcpy( value.hash->data, &regs[rb], sizeof(mrbc_value) * rc );
+  memset( &regs[rb], 0, sizeof(mrbc_value) * rc );
   value.hash->n_stored = rc;
 
   mrbc_release(&regs[ra]);
@@ -1324,18 +1595,18 @@ inline static int op_hash( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_lambda( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_lambda( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bz(code);      // sequence position in irep list
   // int c = GETARG_C(code);    // TODO: Add flags support for OP_LAMBDA
-  mrb_proc *proc = mrbc_rproc_alloc(vm, "(lambda)");
+  mrbc_proc *proc = mrbc_rproc_alloc(vm, "(lambda)");
 
   proc->c_func = 0;
   proc->irep = vm->pc_irep->reps[rb];
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_PROC;
+  regs[ra].tt = MRBC_TT_PROC;
   regs[ra].proc = proc;
 
   return 0;
@@ -1353,7 +1624,7 @@ inline static int op_lambda( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_range( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_range( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);
@@ -1362,7 +1633,7 @@ inline static int op_range( mrb_vm *vm, uint32_t code, mrb_value *regs )
   mrbc_dup(&regs[rb]);
   mrbc_dup(&regs[rb+1]);
 
-  mrb_value value = mrbc_range_new(vm, &regs[rb], &regs[rb+1], rc);
+  mrbc_value value = mrbc_range_new(vm, &regs[rb], &regs[rb+1], rc);
   if( value.range == NULL ) return -1;		// ENOMEM
 
   mrbc_release(&regs[ra]);
@@ -1385,18 +1656,18 @@ inline static int op_range( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_class( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_class( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);
 
-  mrb_irep *cur_irep = vm->pc_irep;
+  mrbc_irep *cur_irep = vm->pc_irep;
   const char *sym_name = mrbc_get_irep_symbol(cur_irep->ptr_to_sym, rb);
-  mrb_class *super = (regs[ra+1].tt == MRB_TT_CLASS) ? regs[ra+1].cls : mrbc_class_object;
+  mrbc_class *super = (regs[ra+1].tt == MRBC_TT_CLASS) ? regs[ra+1].cls : mrbc_class_object;
 
-  mrb_class *cls = mrbc_define_class(vm, sym_name, super);
+  mrbc_class *cls = mrbc_define_class(vm, sym_name, super);
 
-  mrb_value ret = {.tt = MRB_TT_CLASS};
+  mrbc_value ret = {.tt = MRBC_TT_CLASS};
   ret.cls = cls;
 
   regs[ra] = ret;
@@ -1416,28 +1687,22 @@ inline static int op_class( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_exec( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_exec( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_Bx(code);
 
-  mrb_value recv = regs[ra];
+  mrbc_value recv = regs[ra];
 
   // prepare callinfo
-  mrb_callinfo *callinfo = vm->callinfo + vm->callinfo_top;
-  callinfo->reg_top = vm->reg_top;
-  callinfo->pc_irep = vm->pc_irep;
-  callinfo->pc = vm->pc;
-  callinfo->target_class = vm->target_class;
-  callinfo->n_args = 0;
-  vm->callinfo_top++;
+  mrbc_push_callinfo(vm, 0, 0);
 
   // target irep
   vm->pc = 0;
   vm->pc_irep = vm->irep->reps[rb];
 
   // new regs
-  vm->reg_top += ra;
+  vm->current_regs += ra;
 
   vm->target_class = find_class_by_object(vm, &recv);
 
@@ -1457,22 +1722,22 @@ inline static int op_exec( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_method( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_method( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
   int rb = GETARG_B(code);
-  mrb_proc *proc = regs[ra+1].proc;
+  mrbc_proc *proc = regs[ra+1].proc;
 
-  if( regs[ra].tt == MRB_TT_CLASS ) {
-    mrb_class *cls = regs[ra].cls;
+  if( regs[ra].tt == MRBC_TT_CLASS ) {
+    mrbc_class *cls = regs[ra].cls;
 
     // sym_id : method name
-    mrb_irep *cur_irep = vm->pc_irep;
+    mrbc_irep *cur_irep = vm->pc_irep;
     const char *sym_name = mrbc_get_irep_symbol(cur_irep->ptr_to_sym, rb);
     int sym_id = str_to_symid(sym_name);
 
     // check same name method
-    mrb_proc *p = cls->procs;
+    mrbc_proc *p = cls->procs;
     void *pp = &cls->procs;
     while( p != NULL ) {
       if( p->sym_id == sym_id ) break;
@@ -1481,9 +1746,9 @@ inline static int op_method( mrb_vm *vm, uint32_t code, mrb_value *regs )
     }
     if( p ) {
       // found it.
-      *((mrb_proc**)pp) = p->next;
+      *((mrbc_proc**)pp) = p->next;
       if( !p->c_func ) {
-	mrb_value v = {.tt = MRB_TT_PROC};
+	mrbc_value v = {.tt = MRBC_TT_PROC};
 	v.proc = p;
 	mrbc_release(&v);
       }
@@ -1499,7 +1764,7 @@ inline static int op_method( mrb_vm *vm, uint32_t code, mrb_value *regs )
     cls->procs = proc;
 
     mrbc_set_vm_id(proc, 0);
-    regs[ra+1].tt = MRB_TT_EMPTY;
+    regs[ra+1].tt = MRBC_TT_EMPTY;
   }
 
   return 0;
@@ -1517,12 +1782,12 @@ inline static int op_method( mrb_vm *vm, uint32_t code, mrb_value *regs )
   @param  regs  vm->regs + vm->reg_top
   @retval 0  No error.
 */
-inline static int op_tclass( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_tclass( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
   int ra = GETARG_A(code);
 
   mrbc_release(&regs[ra]);
-  regs[ra].tt = MRB_TT_CLASS;
+  regs[ra].tt = MRBC_TT_CLASS;
   regs[ra].cls = vm->target_class;
 
   return 0;
@@ -1531,21 +1796,25 @@ inline static int op_tclass( mrb_vm *vm, uint32_t code, mrb_value *regs )
 
 //================================================================
 /*!@brief
-  Execute OP_STOP
+  Execute OP_STOP and OP_ABORT
 
-  stop VM
+  stop VM (OP_STOP)
+  stop VM without release memory (OP_ABORT)
 
   @param  vm    A pointer of VM.
   @param  code  bytecode
   @param  regs  vm->regs + vm->reg_top
   @retval -1  No error and exit from vm.
 */
-inline static int op_stop( mrb_vm *vm, uint32_t code, mrb_value *regs )
+static inline int op_stop( mrbc_vm *vm, uint32_t code, mrbc_value *regs )
 {
-  int i;
-  for( i = 0; i < MAX_REGS_SIZE; i++ ) {
-    mrbc_release(&vm->regs[i]);
+  if( GET_OPCODE(code) == OP_STOP ) {
+    int i;
+    for( i = 0; i < MAX_REGS_SIZE; i++ ) {
+      mrbc_release(&vm->regs[i]);
+    }
   }
+
   vm->flag_preemption = 1;
 
   return -1;
@@ -1556,16 +1825,16 @@ inline static int op_stop( mrb_vm *vm, uint32_t code, mrb_value *regs )
 /*!@brief
   Open the VM.
 
-  @param vm     Pointer to mrb_vm or NULL.
-  @return	Pointer to mrb_vm.
+  @param vm     Pointer to mrbc_vm or NULL.
+  @return	Pointer to mrbc_vm.
   @retval NULL	error.
 */
-mrb_vm *mrbc_vm_open(mrb_vm *vm_arg)
+mrbc_vm *mrbc_vm_open( struct VM *vm_arg )
 {
-  mrb_vm *vm;
+  mrbc_vm *vm;
   if( (vm = vm_arg) == NULL ) {
     // allocate memory.
-    vm = (mrb_vm *)mrbc_raw_alloc( sizeof(mrb_vm) );
+    vm = (mrbc_vm *)mrbc_raw_alloc( sizeof(mrbc_vm) );
     if( vm == NULL ) return NULL;
   }
 
@@ -1586,7 +1855,7 @@ mrb_vm *mrbc_vm_open(mrb_vm *vm_arg)
   }
 
   // initialize attributes.
-  memset(vm, 0, sizeof(mrb_vm));	// caution: assume NULL is zero.
+  memset(vm, 0, sizeof(mrbc_vm));	// caution: assume NULL is zero.
   if( vm_arg == NULL ) vm->flag_need_memfree = 1;
   vm->vm_id = vm_id;
 
@@ -1599,9 +1868,9 @@ mrb_vm *mrbc_vm_open(mrb_vm *vm_arg)
 /*!@brief
   Close the VM.
 
-  @param  vm  Pointer to mrb_vm
+  @param  vm  Pointer to VM
 */
-void mrbc_vm_close(mrb_vm *vm)
+void mrbc_vm_close( struct VM *vm )
 {
   // free vm id.
   int i = (vm->vm_id-1) / FREE_BITMAP_WIDTH;
@@ -1622,19 +1891,24 @@ void mrbc_vm_close(mrb_vm *vm)
 
   @param  vm  Pointer to VM
 */
-void mrbc_vm_begin(mrb_vm *vm)
+void mrbc_vm_begin( struct VM *vm )
 {
   vm->pc_irep = vm->irep;
   vm->pc = 0;
-  vm->reg_top = 0;
+  vm->current_regs = vm->regs;
   memset(vm->regs, 0, sizeof(vm->regs));
 
+  // clear regs
+  int i;
+  for( i = 1; i < MAX_REGS_SIZE; i++ ) {
+    vm->regs[i].tt = MRBC_TT_NIL;
+  }
+
   // set self to reg[0]
-  vm->regs[0].tt = MRB_TT_CLASS;
+  vm->regs[0].tt = MRBC_TT_CLASS;
   vm->regs[0].cls = mrbc_class_object;
 
-  vm->callinfo_top = 0;
-  memset(vm->callinfo, 0, sizeof(vm->callinfo));
+  vm->callinfo_tail = NULL;
 
   // target_class
   vm->target_class = mrbc_class_object;
@@ -1650,7 +1924,7 @@ void mrbc_vm_begin(mrb_vm *vm)
 
   @param  vm  Pointer to VM
 */
-void mrbc_vm_end(mrb_vm *vm)
+void mrbc_vm_end( struct VM *vm )
 {
   mrbc_global_clear_vm_id();
   mrbc_free_all(vm);
@@ -1664,22 +1938,17 @@ void mrbc_vm_end(mrb_vm *vm)
   @param  vm    A pointer of VM.
   @retval 0  No error.
 */
-int mrbc_vm_run( mrb_vm *vm )
+int mrbc_vm_run( struct VM *vm )
 {
   int ret = 0;
 
   do {
-    // check irep length
-    if( vm->pc >= vm->pc_irep->ilen ){
-      return 0;
-    }
-
     // get one bytecode
     uint32_t code = bin_to_uint32(vm->pc_irep->code + vm->pc * 4);
     vm->pc++;
 
     // regs
-    mrb_value *regs = vm->regs + vm->reg_top;
+    mrbc_value *regs = vm->current_regs;
 
     // Dispatch
     int opcode = GET_OPCODE(code);
@@ -1699,12 +1968,17 @@ int mrbc_vm_run( mrb_vm *vm )
     case OP_SETIV:      ret = op_setiv     (vm, code, regs); break;
     case OP_GETCONST:   ret = op_getconst  (vm, code, regs); break;
     case OP_SETCONST:   ret = op_setconst  (vm, code, regs); break;
+    case OP_GETMCNST:   ret = op_getconst  (vm, code, regs); break;  // reuse
+    case OP_GETUPVAR:   ret = op_getupvar  (vm, code, regs); break;
+    case OP_SETUPVAR:   ret = op_setupvar  (vm, code, regs); break;
     case OP_JMP:        ret = op_jmp       (vm, code, regs); break;
     case OP_JMPIF:      ret = op_jmpif     (vm, code, regs); break;
     case OP_JMPNOT:     ret = op_jmpnot    (vm, code, regs); break;
     case OP_SEND:       ret = op_send      (vm, code, regs); break;
-    case OP_SENDB:      ret = op_send      (vm, code, regs); break;
+    case OP_SENDB:      ret = op_send      (vm, code, regs); break;  // reuse
     case OP_CALL:       ret = op_call      (vm, code, regs); break;
+    case OP_SUPER:      ret = op_super     (vm, code, regs); break;
+    case OP_ARGARY:     ret = op_argary    (vm, code, regs); break;
     case OP_ENTER:      ret = op_enter     (vm, code, regs); break;
     case OP_RETURN:     ret = op_return    (vm, code, regs); break;
     case OP_BLKPUSH:    ret = op_blkpush   (vm, code, regs); break;
@@ -1721,6 +1995,7 @@ int mrbc_vm_run( mrb_vm *vm )
     case OP_GE:         ret = op_ge        (vm, code, regs); break;
     case OP_ARRAY:      ret = op_array     (vm, code, regs); break;
     case OP_STRING:     ret = op_string    (vm, code, regs); break;
+    case OP_STRCAT:     ret = op_strcat    (vm, code, regs); break;
     case OP_HASH:       ret = op_hash      (vm, code, regs); break;
     case OP_LAMBDA:     ret = op_lambda    (vm, code, regs); break;
     case OP_RANGE:      ret = op_range     (vm, code, regs); break;
@@ -1729,11 +2004,14 @@ int mrbc_vm_run( mrb_vm *vm )
     case OP_METHOD:     ret = op_method    (vm, code, regs); break;
     case OP_TCLASS:     ret = op_tclass    (vm, code, regs); break;
     case OP_STOP:       ret = op_stop      (vm, code, regs); break;
+    case OP_ABORT:      ret = op_stop      (vm, code, regs); break;  // reuse
     default:
       console_printf("Skip OP=%02x\n", GET_OPCODE(code));
       break;
     }
   } while( !vm->flag_preemption );
+
+  vm->flag_preemption = 0;
 
   return ret;
 }

@@ -130,11 +130,11 @@ static int add_index( uint16_t hash, const char *str )
   @param  str	String
   @return 	symbol object
 */
-mrb_value mrbc_symbol_new(struct VM *vm, const char *str)
+mrbc_value mrbc_symbol_new(struct VM *vm, const char *str)
 {
-  mrb_value ret = {.tt = MRB_TT_SYMBOL};
+  mrbc_value ret = {.tt = MRBC_TT_SYMBOL};
   uint16_t h = calc_hash(str);
-  mrb_sym sym_id = search_index(h, str);
+  mrbc_sym sym_id = search_index(h, str);
 
   if( sym_id >= 0 ) {
     ret.i = sym_id;
@@ -175,12 +175,12 @@ uint16_t calc_hash(const char *str)
 /*! Convert string to symbol value.
 
   @param  str		Target string.
-  @return mrb_sym	Symbol value.
+  @return mrbc_sym	Symbol value.
 */
-mrb_sym str_to_symid(const char *str)
+mrbc_sym str_to_symid(const char *str)
 {
   uint16_t h = calc_hash(str);
-  mrb_sym sym_id = search_index(h, str);
+  mrbc_sym sym_id = search_index(h, str);
   if( sym_id >= 0 ) return sym_id;
 
   return add_index( h, str );
@@ -190,11 +190,11 @@ mrb_sym str_to_symid(const char *str)
 //================================================================
 /*! Convert symbol value to string.
 
-  @param  mrb_sym	Symbol value.
+  @param  mrbc_sym	Symbol value.
   @return const char*	String.
   @retval NULL		Invalid sym_id was given.
 */
-const char * symid_to_str(mrb_sym sym_id)
+const char * symid_to_str(mrbc_sym sym_id)
 {
   if( sym_id < 0 ) return NULL;
   if( sym_id >= sym_index_pos ) return NULL;
@@ -207,13 +207,13 @@ const char * symid_to_str(mrb_sym sym_id)
 //================================================================
 /*! (method) all_symbols
 */
-static void c_all_symbols(mrb_vm *vm, mrb_value v[], int argc)
+static void c_all_symbols(struct VM *vm, mrbc_value v[], int argc)
 {
-  mrb_value ret = mrbc_array_new(vm, sym_index_pos);
+  mrbc_value ret = mrbc_array_new(vm, sym_index_pos);
 
   int i;
   for( i = 0; i < sym_index_pos; i++ ) {
-    mrb_value sym1 = {.tt = MRB_TT_SYMBOL};
+    mrbc_value sym1 = {.tt = MRBC_TT_SYMBOL};
     sym1.i = i;
     mrbc_array_push(&ret, &sym1);
   }
@@ -223,27 +223,25 @@ static void c_all_symbols(mrb_vm *vm, mrb_value v[], int argc)
 
 #if MRBC_USE_STRING
 //================================================================
+/*! (method) inspect
+*/
+static void c_inspect(struct VM *vm, mrbc_value v[], int argc)
+{
+  const char *s = symid_to_str(v[0].i);
+  v[0] = mrbc_string_new_cstr(vm, ":");
+  mrbc_string_append_cstr(&v[0], s);
+}
+
+
+//================================================================
 /*! (method) to_s
 */
-static void c_to_s(mrb_vm *vm, mrb_value v[], int argc)
+static void c_to_s(struct VM *vm, mrbc_value v[], int argc)
 {
   v[0] = mrbc_string_new_cstr(vm, symid_to_str(v[0].i));
 }
 #endif
 
-
-
-//================================================================
-/*! (method) ===
-*/
-static void c_equal3(mrb_vm *vm, mrb_value v[], int argc)
-{
-  if( mrbc_compare(&v[0], &v[1]) == 0 ) {
-    SET_TRUE_RETURN();
-  } else {
-    SET_FALSE_RETURN();
-  }
-}
 
 
 //================================================================
@@ -255,9 +253,27 @@ void mrbc_init_class_symbol(struct VM *vm)
 
   mrbc_define_method(vm, mrbc_class_symbol, "all_symbols", c_all_symbols);
 #if MRBC_USE_STRING
+  mrbc_define_method(vm, mrbc_class_symbol, "inspect", c_inspect);
   mrbc_define_method(vm, mrbc_class_symbol, "to_s", c_to_s);
   mrbc_define_method(vm, mrbc_class_symbol, "id2name", c_to_s);
 #endif
   mrbc_define_method(vm, mrbc_class_symbol, "to_sym", c_ineffect);
-  mrbc_define_method(vm, mrbc_class_symbol, "===", c_equal3);
 }
+
+
+
+#if defined(MRBC_DEBUG)
+//================================================================
+/* statistics
+
+   (e.g.)
+   total = MAX_SYMBOLS_COUNT;
+   mrbc_symbol_statistics( &used );
+   console_printf("Symbol table: %d/%d %d%% used.\n",
+                   used, total, 100 * used / total );
+*/
+void mrbc_symbol_statistics( int *total_used )
+{
+  *total_used = sym_index_pos;
+}
+#endif

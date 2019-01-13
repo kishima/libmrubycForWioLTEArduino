@@ -17,6 +17,7 @@
 #include "static.h"
 #include "class.h"
 #include "c_range.h"
+#include "c_string.h"
 #include "console.h"
 #include "opcode.h"
 
@@ -30,15 +31,15 @@
   @param  flag_exclude	true: exclude the end object, otherwise include.
   @return		range object.
 */
-mrb_value mrbc_range_new( struct VM *vm, mrb_value *first, mrb_value *last, int flag_exclude)
+mrbc_value mrbc_range_new( struct VM *vm, mrbc_value *first, mrbc_value *last, int flag_exclude)
 {
-  mrb_value value = {.tt = MRB_TT_RANGE};
+  mrbc_value value = {.tt = MRBC_TT_RANGE};
 
-  value.range = mrbc_alloc(vm, sizeof(mrb_range));
+  value.range = mrbc_alloc(vm, sizeof(mrbc_range));
   if( !value.range ) return value;		// ENOMEM
 
   value.range->ref_count = 1;
-  value.range->tt = MRB_TT_STRING;	// TODO: for DEBUG
+  value.range->tt = MRBC_TT_STRING;	// TODO: for DEBUG
   value.range->flag_exclude = flag_exclude;
   value.range->first = *first;
   value.range->last = *last;
@@ -52,7 +53,7 @@ mrb_value mrbc_range_new( struct VM *vm, mrb_value *first, mrb_value *last, int 
 
   @param  target 	pointer to range object.
 */
-void mrbc_range_delete(mrb_value *v)
+void mrbc_range_delete(mrbc_value *v)
 {
   mrbc_release( &v->range->first );
   mrbc_release( &v->range->last );
@@ -64,7 +65,7 @@ void mrbc_range_delete(mrb_value *v)
 //================================================================
 /*! clear vm_id
 */
-void mrbc_range_clear_vm_id(mrb_value *v)
+void mrbc_range_clear_vm_id(mrbc_value *v)
 {
   mrbc_set_vm_id( v->range, 0 );
   mrbc_clear_vm_id( &v->range->first );
@@ -75,7 +76,7 @@ void mrbc_range_clear_vm_id(mrb_value *v)
 //================================================================
 /*! compare
 */
-int mrbc_range_compare(const mrb_value *v1, const mrb_value *v2)
+int mrbc_range_compare(const mrbc_value *v1, const mrbc_value *v2)
 {
   int res;
 
@@ -93,40 +94,32 @@ int mrbc_range_compare(const mrb_value *v1, const mrb_value *v2)
 //================================================================
 /*! (method) ===
 */
-static void c_range_equal3(mrb_vm *vm, mrb_value v[], int argc)
+static void c_range_equal3(struct VM *vm, mrbc_value v[], int argc)
 {
-  int result = 0;
-
-  mrb_value *v_first = &v[0].range->first;
-  mrb_value *v_last =&v[0].range->last;
-  mrb_value *v1 = &v[1];
-
-  if( v_first->tt == MRB_TT_FIXNUM && v1->tt == MRB_TT_FIXNUM ) {
-    if( v->range->flag_exclude ) {
-      result = (v_first->i <= v1->i) && (v1->i < v_last->i);
-    } else {
-      result = (v_first->i <= v1->i) && (v1->i <= v_last->i);
-    }
-    goto DONE;
+  if( v[0].tt == MRBC_TT_CLASS ) {
+    mrbc_value result = mrbc_send( vm, v, argc, &v[1], "kind_of?", 1, &v[0] );
+    SET_RETURN( result );
+    return;
   }
-  console_printf( "Not supported\n" );
-  return;
+
+  int cmp_first = mrbc_compare( &v[0].range->first, &v[1] );
+  int result = (cmp_first <= 0);
+  if( !result ) goto DONE;
+
+  int cmp_last  = mrbc_compare( &v[1], &v[0].range->last );
+  result = (v->range->flag_exclude) ? (cmp_last < 0) : (cmp_last <= 0);
 
  DONE:
-  if( result ) {
-    SET_TRUE_RETURN();
-  } else {
-    SET_FALSE_RETURN();
-  }
+  SET_BOOL_RETURN( result );
 }
 
 
 //================================================================
 /*! (method) first
 */
-static void c_range_first(mrb_vm *vm, mrb_value v[], int argc)
+static void c_range_first(struct VM *vm, mrbc_value v[], int argc)
 {
-  mrb_value ret = mrbc_range_first(v);
+  mrbc_value ret = mrbc_range_first(v);
   SET_RETURN(ret);
 }
 
@@ -134,71 +127,67 @@ static void c_range_first(mrb_vm *vm, mrb_value v[], int argc)
 //================================================================
 /*! (method) last
 */
-static void c_range_last(mrb_vm *vm, mrb_value v[], int argc)
+static void c_range_last(struct VM *vm, mrbc_value v[], int argc)
 {
-  mrb_value ret = mrbc_range_last(v);
+  mrbc_value ret = mrbc_range_last(v);
   SET_RETURN(ret);
 }
 
 
 
 //================================================================
-/*! (method) each
+/*! (method) exclude_end?
 */
-static void c_range_each(mrb_vm *vm, mrb_value v[], int argc)
+static void c_range_exclude_end(struct VM *vm, mrbc_value v[], int argc)
 {
-    uint32_t code = MKOPCODE(OP_CALL) | MKARG_A(argc);
-  mrb_irep irep = {
-    0,     // nlocals
-    0,     // nregs
-    0,     // rlen
-    1,     // ilen
-    0,     // plen
-    (uint8_t *)&code,   // iseq
-    NULL,  // pools
-    NULL,  // ptr_to_sym
-    NULL,  // reps
-  };
-
-  // get range
-  mrb_range *range = v[0].range;
-
-  mrbc_push_callinfo(vm, 0);
-
-  // adjust reg_top for reg[0]==Proc
-  vm->reg_top += v - vm->regs + 1;
-
-  if( range->first.tt == MRB_TT_FIXNUM && range->last.tt == MRB_TT_FIXNUM ){
-    int i, i_last = range->last.i;
-    if( range->flag_exclude ) i_last--;
-    for( i=range->first.i ; i<=i_last ; i++ ){
-      v[2].tt = MRB_TT_FIXNUM;
-      v[2].i = i;
-      // set OP_CALL irep
-      vm->pc = 0;
-      vm->pc_irep = &irep;
-      
-      // execute OP_CALL
-      mrbc_vm_run(vm);
-    }
-  } else {
-    console_printf( "Not supported\n" );
-  }
-  
-  mrbc_pop_callinfo(vm);
+  int result = v->range->flag_exclude;
+  SET_BOOL_RETURN( result );
 }
+
+
+
+#if MRBC_USE_STRING
+//================================================================
+/*! (method) inspect
+*/
+static void c_range_inspect(struct VM *vm, mrbc_value v[], int argc)
+{
+  mrbc_value ret = mrbc_string_new(vm, NULL, 0);
+  if( !ret.string ) goto RETURN_NIL;		// ENOMEM
+
+  int i;
+  for( i = 0; i < 2; i++ ) {
+    if( i != 0 ) mrbc_string_append_cstr( &ret, ".." );
+    mrbc_value v1 = (i == 0) ? mrbc_range_first(v) : mrbc_range_last(v);
+    mrbc_value s1 = mrbc_send( vm, v, argc, &v1, "inspect", 0 );
+    mrbc_string_append( &ret, &s1 );
+    mrbc_string_delete( &s1 );
+  }
+
+  SET_RETURN(ret);
+  return;
+
+ RETURN_NIL:
+  SET_NIL_RETURN();
+}
+#endif
 
 
 
 //================================================================
 /*! initialize
 */
-void mrbc_init_class_range(mrb_vm *vm)
+void mrbc_init_class_range(struct VM *vm)
 {
   mrbc_class_range = mrbc_define_class(vm, "Range", mrbc_class_object);
 
   mrbc_define_method(vm, mrbc_class_range, "===", c_range_equal3);
   mrbc_define_method(vm, mrbc_class_range, "first", c_range_first);
   mrbc_define_method(vm, mrbc_class_range, "last", c_range_last);
-  mrbc_define_method(vm, mrbc_class_range, "each", c_range_each);
+  mrbc_define_method(vm, mrbc_class_range, "exclude_end?", c_range_exclude_end);
+
+#if MRBC_USE_STRING
+  mrbc_define_method(vm, mrbc_class_range, "inspect", c_range_inspect);
+  mrbc_define_method(vm, mrbc_class_range, "to_s", c_range_inspect);
+#endif
 }

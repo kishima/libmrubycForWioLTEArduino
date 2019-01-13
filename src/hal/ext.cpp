@@ -10,9 +10,9 @@
 #include "libmrubyc.h"
 #include "ext.h"
 
-bool mrbc_trans_cppbool_value(mrb_vtype tt)
+bool mrbc_trans_cppbool_value(mrbc_vtype tt)
 {
-	if(tt==MRB_TT_TRUE){
+	if(tt==MRBC_TT_TRUE){
 		return true;
 	}
 	return false;

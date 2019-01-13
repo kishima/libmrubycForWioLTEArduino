@@ -16,9 +16,9 @@
 #ifndef MRBC_SRC_VM_H_
 #define MRBC_SRC_VM_H_
 
-#include <stdint.h>
 #include "vm_config.h"
 #include "value.h"
+#include "class.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,11 +37,12 @@ typedef struct IREP {
   uint16_t plen;		//!< # of pool
 
   uint8_t     *code;		//!< ISEQ (code) BLOCK
-  mrb_object  **pools;          //!< array of POOL objects pointer.
+  mrbc_object **pools;		//!< array of POOL objects pointer.
   uint8_t     *ptr_to_sym;
   struct IREP **reps;		//!< array of child IREP's pointer.
 
-} mrb_irep;
+} mrbc_irep;
+typedef struct IREP mrb_irep;
 
 
 //================================================================
@@ -49,12 +50,15 @@ typedef struct IREP {
   Call information
 */
 typedef struct CALLINFO {
-  mrb_irep *pc_irep;
+  struct CALLINFO *prev;
+  mrbc_sym mid;
+  mrbc_irep *pc_irep;
   uint16_t  pc;
-  uint16_t  reg_top;
-  mrb_class *target_class;
+  mrbc_value *current_regs;
+  mrbc_class *target_class;
   uint8_t   n_args;     // num of args
-} mrb_callinfo;
+} mrbc_callinfo;
+typedef struct CALLINFO mrb_callinfo;
 
 
 //================================================================
@@ -62,49 +66,70 @@ typedef struct CALLINFO {
   Virtual Machine
 */
 typedef struct VM {
-  mrb_irep *irep;
+  mrbc_irep *irep;
 
   uint8_t        vm_id; // vm_id : 1..n
   const uint8_t *mrb;   // bytecode
 
-  mrb_irep *pc_irep;    // PC
+  mrbc_irep *pc_irep;    // PC
   uint16_t  pc;         // PC
 
-  uint16_t     reg_top;
-  mrb_value    regs[MAX_REGS_SIZE];
-  uint16_t     callinfo_top;
-  mrb_callinfo callinfo[MAX_CALLINFO_SIZE];
+  //  uint16_t     reg_top;
+  mrbc_value    regs[MAX_REGS_SIZE];
+  mrbc_value   *current_regs;
+  mrbc_callinfo *callinfo_tail;
 
-  mrb_class *target_class;
+  mrbc_class *target_class;
 
   int32_t error_code;
 
   volatile int8_t flag_preemption;
   int8_t flag_need_memfree;
-} mrb_vm;
+} mrbc_vm;
+typedef struct VM mrb_vm;
+
 
 
 const char *mrbc_get_irep_symbol(const uint8_t *p, int n);
-const char *mrbc_get_callee_name(mrb_vm *vm);
-mrb_vm *mrbc_vm_open(mrb_vm *vm_arg);
-void mrbc_vm_close(mrb_vm *vm);
-void mrbc_vm_begin(mrb_vm *vm);
-void mrbc_vm_end(mrb_vm *vm);
-int mrbc_vm_run(mrb_vm *vm);
+const char *mrbc_get_callee_name(struct VM *vm);
+mrbc_irep *mrbc_irep_alloc(struct VM *vm);
+void mrbc_irep_free(mrbc_irep *irep);
+void mrbc_push_callinfo(struct VM *vm, mrbc_sym mid, int n_args);
+void mrbc_pop_callinfo(struct VM *vm);
+mrbc_vm *mrbc_vm_open(struct VM *vm_arg);
+void mrbc_vm_close(struct VM *vm);
+void mrbc_vm_begin(struct VM *vm);
+void mrbc_vm_end(struct VM *vm);
+int mrbc_vm_run(struct VM *vm);
 
-void mrbc_push_callinfo(mrb_vm *vm, int n_args);
-void mrbc_pop_callinfo(mrb_vm *vm);
+
 
 //================================================================
-/*!@brief
-  Get 32bit value from memory big endian.
+/*! Get 32bit value from memory.
 
-  @param  s	Pointer of memory.
+  @param  s	Pointer to memory.
   @return	32bit unsigned value.
 */
-inline static uint32_t bin_to_uint32( const void *s )
+static inline uint32_t bin_to_uint32( const void *s )
 {
-#if MRBC_REQUIRE_32BIT_ALIGNMENT
+  // Little endian, no alignment.
+  //  e.g. ARM Coretex-M4, Intel x86
+#if defined(MRBC_LITTLE_ENDIAN) && !defined(MRBC_REQUIRE_32BIT_ALIGNMENT)
+  uint32_t x = *((uint32_t *)s);
+  return (x << 24) | ((x & 0xff00) << 8) | ((x >> 8) & 0xff00) | (x >> 24);
+
+  // Big endian, no alignment.
+  //  e.g. IBM PPC405
+#elif defined(MRBC_BIG_ENDIAN) && !defined(MRBC_REQUIRE_32BIT_ALIGNMENT)
+  uint32_t x = *((uint32_t *)s);
+  return x;
+
+  // 32bit alignment required.
+  // Little endian
+  //  e.g. ARM Coretex-M0
+  // Big endian
+  //  e.g. OpenRISC
+#elif defined(MRBC_REQUIRE_32BIT_ALIGNMENT)
   uint8_t *p = (uint8_t *)s;
   uint32_t x = *p++;
   x <<= 8;
@@ -114,31 +139,73 @@ inline static uint32_t bin_to_uint32( const void *s )
   x <<= 8;
   x |= *p;
   return x;
+
 #else
-  uint32_t x = *((uint32_t *)s);
-  return (x << 24) | ((x & 0xff00) << 8) | ((x >> 8) & 0xff00) | (x >> 24);
+  #error "Specify MRBC_BIG_ENDIAN or MRBC_LITTLE_ENDIAN"
 #endif
 }
 
 
 //================================================================
-/*!@brief
-  Get 16bit value from memory big endian.
+/*! Get 16bit value from memory.
 
-  @param  s	Pointer of memory.
+  @param  s	Pointer to memory.
   @return	16bit unsigned value.
 */
-inline static uint16_t bin_to_uint16( const void *s )
+static inline uint16_t bin_to_uint16( const void *s )
 {
-#if MRBC_REQUIRE_32BIT_ALIGNMENT
-  uint8_t *p = (uint8_t *)s;
-  uint16_t x = *p++ << 8;
-  x |= *p;
-  return x;
-#else
+  // Little endian, no alignment.
+#if defined(MRBC_LITTLE_ENDIAN) && !defined(MRBC_REQUIRE_32BIT_ALIGNMENT)
   uint16_t x = *((uint16_t *)s);
   return (x << 8) | (x >> 8);
+
+  // Big endian, no alignment.
+#elif defined(MRBC_BIG_ENDIAN) && !defined(MRBC_REQUIRE_32BIT_ALIGNMENT)
+  uint16_t x = *((uint16_t *)s);
+  return x;
+
+  // 32bit alignment required.
+#elif defined(MRBC_REQUIRE_32BIT_ALIGNMENT)
+  uint8_t *p = (uint8_t *)s;
+  uint16_t x = *p++;
+  x <<= 8;
+  x |= *p;
+  return x;
+
 #endif
+}
+
+
+//================================================================
+/*! Set 32bit value to memory.
+
+  @param  v	Source value.
+  @param  d	Pointer to memory.
+*/
+static inline void uint32_to_bin( uint32_t v, void *d )
+{
+  uint8_t *p = (uint8_t *)d + 3;
+  *p-- = 0xff & v;
+  v >>= 8;
+  *p-- = 0xff & v;
+  v >>= 8;
+  *p-- = 0xff & v;
+  v >>= 8;
+  *p = 0xff & v;
+}
+
+
+//================================================================
+/*! Set 16bit value to memory.
+
+  @param  v	Source value.
+  @param  d	Pointer to memory.
+*/
+static inline void uint16_to_bin( uint16_t v, void *d )
+{
+  uint8_t *p = (uint8_t *)d;
+  *p++ = (v >> 8);
+  *p = 0xff & v;
 }
 
 

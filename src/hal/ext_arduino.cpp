@@ -20,7 +20,7 @@ static void class_arduino_delay(mrb_vm *vm, mrb_value *v, int argc )
 static void class_arduino_pin_mode(mrb_vm *vm, mrb_value *v, int argc )
 {
 	int pin = 0;
-	if(GET_TT_ARG(1) == MRB_TT_FIXNUM){
+	if(GET_TT_ARG(1) == MRBC_TT_FIXNUM){
 		pin = GET_INT_ARG(1);
 	}else{
 		SET_FALSE_RETURN();
@@ -28,14 +28,14 @@ static void class_arduino_pin_mode(mrb_vm *vm, mrb_value *v, int argc )
 	}
 	
 	WiringPinMode mode = INPUT;
-	if(GET_TT_ARG(2) != MRB_TT_SYMBOL){
+	if(GET_TT_ARG(2) != MRBC_TT_SYMBOL){
 		SET_FALSE_RETURN();
 		return;
 	}
-	mrb_sym sym_in = str_to_symid((const char *)GET_STRING_ARG(2));
-	mrb_sym sym_INPUT = str_to_symid("INPUT");
-	mrb_sym sym_OUTPUT = str_to_symid("OUTPUT");
-	mrb_sym sym_INPUT_PULLUP = str_to_symid("INPUT_PULLUP");
+	mrbc_sym sym_in = str_to_symid((const char *)GET_STRING_ARG(2));
+	mrbc_sym sym_INPUT = str_to_symid("INPUT");
+	mrbc_sym sym_OUTPUT = str_to_symid("OUTPUT");
+	mrbc_sym sym_INPUT_PULLUP = str_to_symid("INPUT_PULLUP");
 
 	if(sym_in == sym_INPUT){
 		mode = INPUT;

@@ -3,8 +3,8 @@
   console output module. (not yet input)
 
   <pre>
-  Copyright (C) 2015-2017 Kyushu Institute of Technology.
-  Copyright (C) 2015-2017 Shimane IT Open-Innovation Center.
+  Copyright (C) 2015-2018 Kyushu Institute of Technology.
+  Copyright (C) 2015-2018 Shimane IT Open-Innovation Center.
 
   This file is distributed under BSD 3-Clause License.
 
@@ -18,6 +18,7 @@
 #if MRBC_USE_FLOAT
 #include <stdio.h>
 #endif
+#include "value.h"
 #include "console.h"
 
 
@@ -32,7 +33,7 @@ void console_printf(const char *fstr, ...)
   va_list ap;
   va_start(ap, fstr);
 
-  mrb_printf pf;
+  mrbc_printf pf;
   char buf[82];
   mrbc_printf_init( &pf, buf, sizeof(buf), fstr );
 
@@ -58,17 +59,21 @@ void console_printf(const char *fstr, ...)
       case 'd':
       case 'i':
       case 'u':
-	ret = mrbc_printf_int( &pf, va_arg(ap, uint32_t), 10);
+	ret = mrbc_printf_int( &pf, va_arg(ap, int), 10);
+	break;
+
+      case 'D':	// for mrbc_int
+	ret = mrbc_printf_int( &pf, va_arg(ap, mrbc_int), 10);
 	break;
 
       case 'b':
       case 'B':
-	ret = mrbc_printf_int( &pf, va_arg(ap, uint32_t), 2);
+	ret = mrbc_printf_int( &pf, va_arg(ap, unsigned int), 2);
 	break;
 
       case 'x':
       case 'X':
-	ret = mrbc_printf_int( &pf, va_arg(ap, uint32_t), 16);
+	ret = mrbc_printf_int( &pf, va_arg(ap, unsigned int), 16);
 	break;
 
 #if MRBC_USE_FLOAT
@@ -98,13 +103,13 @@ void console_printf(const char *fstr, ...)
 //================================================================
 /*! sprintf subcontract function
 
-  @param  pf	pointer to mrb_printf
+  @param  pf	pointer to mrbc_printf
   @retval 0	(format string) done.
   @retval 1	found a format identifier.
   @retval -1	buffer full.
   @note		not terminate ('\0') buffer tail.
 */
-int mrbc_printf_main( mrb_printf *pf )
+int mrbc_printf_main( mrbc_printf *pf )
 {
   int ch = -1;
   pf->fmt = (struct RPrintfFormat){0};
@@ -159,13 +164,13 @@ int mrbc_printf_main( mrb_printf *pf )
 //================================================================
 /*! sprintf subcontract function for char '%c'
 
-  @param  pf	pointer to mrb_printf
+  @param  pf	pointer to mrbc_printf
   @param  ch	output character (ASCII)
   @retval 0	done.
   @retval -1	buffer full.
   @note		not terminate ('\0') buffer tail.
 */
-int mrbc_printf_char( mrb_printf *pf, int ch )
+int mrbc_printf_char( mrbc_printf *pf, int ch )
 {
   if( pf->fmt.flag_minus ) {
     if( pf->p == pf->buf_end ) return -1;
@@ -187,23 +192,25 @@ int mrbc_printf_char( mrb_printf *pf, int ch )
 }
 
 
-
 //================================================================
-/*! sprintf subcontract function for char '%s'
+/*! sprintf subcontract function for byte array.
 
-  @param  pf	pointer to mrb_printf.
-  @param  str	output string.
+  @param  pf	pointer to mrbc_printf.
+  @param  str	pointer to byte array.
+  @param  len	byte length.
   @param  pad	padding character.
   @retval 0	done.
   @retval -1	buffer full.
   @note		not terminate ('\0') buffer tail.
 */
-int mrbc_printf_str( mrb_printf *pf, const char *str, int pad )
+int mrbc_printf_bstr( mrbc_printf *pf, const char *str, int len, int pad )
 {
   int ret = 0;
 
-  if( str == NULL ) str = "(null)";
-  int len = strlen(str);
+  if( str == NULL ) {
+    str = "(null)";
+    len = 6;
+  }
   if( pf->fmt.precision && len > pf->fmt.precision ) len = pf->fmt.precision;
 
   int tw = len;
@@ -241,22 +248,22 @@ int mrbc_printf_str( mrb_printf *pf, const char *str, int pad )
 //================================================================
 /*! sprintf subcontract function for integer '%d' '%x' '%b'
 
-  @param  pf	pointer to mrb_printf.
+  @param  pf	pointer to mrbc_printf.
   @param  value	output value.
   @param  base	n base.
   @retval 0	done.
   @retval -1	buffer full.
   @note		not terminate ('\0') buffer tail.
 */
-int mrbc_printf_int( mrb_printf *pf, int32_t value, int base )
+int mrbc_printf_int( mrbc_printf *pf, mrbc_int value, int base )
 {
   int sign = 0;
-  uint32_t v = (uint32_t)value;
+  mrbc_int v = value;
 
   if( pf->fmt.type == 'd' || pf->fmt.type == 'i' ) {	// signed.
     if( value < 0 ) {
       sign = '-';
-      v = (uint32_t)-value;
+      v = -value;
     } else if( pf->fmt.flag_plus ) {
       sign = '+';
     } else if( pf->fmt.flag_space ) {
@@ -303,12 +310,12 @@ int mrbc_printf_int( mrb_printf *pf, int32_t value, int base )
 //================================================================
 /*! sprintf subcontract function for float(double) '%f'
 
-  @param  pf	pointer to mrb_printf.
+  @param  pf	pointer to mrbc_printf.
   @param  value	output value.
   @retval 0	done.
   @retval -1	buffer full.
 */
-int mrbc_printf_float( mrb_printf *pf, double value )
+int mrbc_printf_float( mrbc_printf *pf, double value )
 {
   char fstr[16];
   const char *p1 = pf->fstr;
@@ -332,11 +339,11 @@ int mrbc_printf_float( mrb_printf *pf, double value )
 //================================================================
 /*! replace output buffer
 
-  @param  pf	pointer to mrb_printf
+  @param  pf	pointer to mrbc_printf
   @param  buf	pointer to output buffer.
   @param  size	buffer size.
 */
-void mrbc_printf_replace_buffer(mrb_printf *pf, char *buf, int size)
+void mrbc_printf_replace_buffer(mrbc_printf *pf, char *buf, int size)
 {
   int p_ofs = pf->p - pf->buf;
   pf->buf = buf;
