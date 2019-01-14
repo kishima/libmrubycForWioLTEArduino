@@ -2,7 +2,7 @@
   ext_wio.cpp
 
   Defining extension methods of Wio LTE
-  
+
   Copyright (c) 2018, katsuhiko kageyama All rights reserved.
 
 */
@@ -38,14 +38,14 @@ static void class_wio_init(mrb_vm *vm, mrb_value *v, int argc )
 static void class_wio_power_supply_LTE(mrb_vm *vm, mrb_value *v, int argc )
 {
 	bool b = mrbc_trans_cppbool_value(GET_TT_ARG(1));
-	
+    DEBUG_PRINT("class_wio_power_supply_LTE\n");
 	wio->PowerSupplyLTE(b);
 	SET_TRUE_RETURN();
 }
 static void class_wio_power_supply_grove(mrb_vm *vm, mrb_value *v, int argc )
 {
 	bool b = mrbc_trans_cppbool_value(GET_TT_ARG(1));
-	
+
 	wio->PowerSupplyGrove(b);
 	SET_TRUE_RETURN();
 }
@@ -81,13 +81,28 @@ static void class_wio_sock_open(mrb_vm *vm, mrb_value *v, int argc )
 {
 	char* host = reinterpret_cast<char*>(GET_STRING_ARG(1));
 	int port = GET_INT_ARG(1);
-	
+
 	int sock = wio->SocketOpen(host, port, WioLTE::SOCKET_TCP);
+	if(sock<0){
+		DEBUG_PRINT("SocketOpen fail!\n");
+		SET_FALSE_RETURN();
+		return;
+	}
+
+	SET_INT_RETURN(sock);
+}
+
+static void class_wio_sock_open_udp(mrb_vm *vm, mrb_value *v, int argc )
+{
+	char* host = reinterpret_cast<char*>(GET_STRING_ARG(1));
+	int port = GET_INT_ARG(2);
+
+	int sock = wio->SocketOpen(host, port, WIOLTE_UDP);
 	if(sock<0){
 		SET_FALSE_RETURN();
 		return;
 	}
-	
+
 	SET_INT_RETURN(sock);
 }
 
@@ -97,12 +112,16 @@ static void class_wio_sock_send(mrb_vm *vm, mrb_value *v, int argc )
 	char* data = reinterpret_cast<char*>(GET_STRING_ARG(2));
 	int dataSize;
 
+    DEBUG_PRINT("send:");
+    DEBUG_PRINTLN(data);
+
 	bool result = wio->SocketSend(sock,(const char*)data);
 
 	if(result){
-		SET_FALSE_RETURN();
-	}else{
 		SET_TRUE_RETURN();
+	}else{
+        DEBUG_PRINTLN("send error!");
+		SET_FALSE_RETURN();
 	}
 }
 static void class_wio_sock_close(mrb_vm *vm, mrb_value *v, int argc )
@@ -111,11 +130,12 @@ static void class_wio_sock_close(mrb_vm *vm, mrb_value *v, int argc )
 	bool result = wio->SocketClose(sock);
 
 	if(result){
-		SET_FALSE_RETURN();
-	}else{
 		SET_TRUE_RETURN();
+	}else{
+        DEBUG_PRINTLN("close error!");
+		SET_FALSE_RETURN();
 	}
-	
+
 }
 
 static void class_wio_http_get(mrb_vm *vm, mrb_value *v, int argc )
@@ -157,13 +177,13 @@ static void class_wio_http_post(mrb_vm *vm, mrb_value *v, int argc )
 void define_wiolte_class()
 {
 	wio=(WioLTE*)hal_get_modem_obj();
-	
+
 	mrb_class *class_wio;
 	class_wio = mrbc_define_class(0, "Wio", mrbc_class_object);
 
 	// --- LED ---
 	mrbc_define_method(0, class_wio, "control_led", class_wio_control_led);
-	
+
 	// --- Power ---
 	mrbc_define_method(0, class_wio, "init", class_wio_init);
 	mrbc_define_method(0, class_wio, "power_supply_LTE", class_wio_power_supply_LTE);
@@ -173,7 +193,7 @@ void define_wiolte_class()
 	mrbc_define_method(0, class_wio, "turnon_or_reset", class_wio_turnon_or_reset);
 	//turn off
 	//sleep
-	
+
 	// --- Network ---
 	mrbc_define_method(0, class_wio, "activate", class_wio_activate);
 	//deactivate
@@ -188,10 +208,11 @@ void define_wiolte_class()
 
 	//socket func
 	mrbc_define_method(0, class_wio, "sock_open", class_wio_sock_open);
+	mrbc_define_method(0, class_wio, "sock_open_udp", class_wio_sock_open_udp);
 	mrbc_define_method(0, class_wio, "sock_send", class_wio_sock_send);
 	//mrbc_define_method(0, class_wio, "sock_recv", class_wio_sock_recv);
 	mrbc_define_method(0, class_wio, "sock_close", class_wio_sock_close);
-	
+
 	//HTTP method
 	mrbc_define_method(0, class_wio, "http_get", class_wio_http_get);
 	mrbc_define_method(0, class_wio, "http_post", class_wio_http_post);

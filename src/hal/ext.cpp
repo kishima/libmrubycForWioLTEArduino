@@ -2,7 +2,7 @@
   ext.cpp
 
   Defining extension methods for Wio LTE
-  
+
   Copyright (c) 2018, katsuhiko kageyama All rights reserved.
 
 */
@@ -23,4 +23,5 @@ void mrbc_define_wiolte_methods(void)
 	define_arduino_class();
 	define_serial_class();
 	define_wiolte_class();
+    define_ultrasonic_class();
 }

@@ -2,7 +2,7 @@
   ext.h
 
   Header file of extension methods
-  
+
   Copyright (c) 2018, katsuhiko kageyama All rights reserved.
 
 */
@@ -19,5 +19,6 @@ bool mrbc_trans_cppbool_value(mrbc_vtype tt);
 void define_wiolte_class(void);
 void define_arduino_class(void);
 void define_serial_class(void);
+void define_ultrasonic_class(void);
 
 #endif
